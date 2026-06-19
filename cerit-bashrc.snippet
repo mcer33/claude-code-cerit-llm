@@ -1,0 +1,264 @@
+# --- Claude Code backend switcher ---
+# Lets the team use Claude Code without an Anthropic subscription by routing
+# Claude Code at CERIT's Anthropic-compatible endpoint.
+#
+# Commands:
+#   claude              -> native Anthropic (uses ~/.claude/.credentials.json)
+#   claude-cerit        -> CERIT backend (free)
+#   claude-cerit-rich   -> CERIT backend via local rewrite proxy; gives back
+#                          the live progress UI (spinner, token countdown).
+#                          Claude Code's TUI gates that UI on ANTHROPIC_MODEL
+#                          matching claude-*; the proxy lets us spoof the name
+#                          while still routing to gemma4 on the wire. Runs a
+#                          pre-flight context-size check so a resumed session
+#                          that won't fit gemma4's 256K window can be
+#                          deflected to /compact under native or long-ctx.
+#   claude-cerit-medium -> CERIT backend on qwen3-coder (262K context).
+#                          Smart compromise between gemma4 (123K) and the
+#                          much-bigger llama-4-scout. Best for sessions in
+#                          the 80K-220K range that overflow gemma4 but fit
+#                          comfortably in qwen3-coder. Same proxy, routed
+#                          via ANTHROPIC_MODEL=claude-cerit-medium.
+#   claude-cerit-long   -> CERIT backend on llama-4-scout (300K deployed).
+#                          Use when /compact fails on gemma4 AND on the
+#                          medium model. Same proxy, routed via
+#                          ANTHROPIC_MODEL=claude-cerit-long.
+#   claude-bench        -> one-shot A/B: same prompt through both, with timings
+#   claude-cerit-ping   -> raw HTTP ping of the CERIT endpoint
+#   claude-backend      -> show which backend the current shell sees
+
+claude-cerit() {
+  local tokfile="$HOME/.config/cerit/token"
+  if [ ! -r "$tokfile" ]; then
+    echo "claude-cerit: missing $tokfile (chmod 600, contents = CERIT API key)" >&2
+    return 1
+  fi
+  ANTHROPIC_BASE_URL="https://llm.ai.e-infra.cz/" \
+  ANTHROPIC_AUTH_TOKEN="$(cat "$tokfile")" \
+  ANTHROPIC_API_KEY="$(cat "$tokfile")" \
+  ANTHROPIC_MODEL="gemma4" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="gemma4" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="gemma4" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5" \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=110000 \
+  MAX_THINKING_TOKENS=0 \
+  DISABLE_TELEMETRY=1 \
+  DISABLE_ERROR_REPORTING=1 \
+  command claude --append-system-prompt "$(cat "$HOME/dev/cerit-subagents/cerit-system-prompt-append.txt" 2>/dev/null)" "$@"
+}
+
+# Internal: warn if resuming a session whose last input_tokens count would
+# overflow the target CERIT model's context window. Returns 0 to proceed,
+# non-zero to abort the launch.
+#   $1 = model_max (target context window in tokens)
+#   $2 = caller name (for the banner)
+# Override threshold via CERIT_CONTEXT_WARN (default = model_max - 40K headroom).
+_cerit_context_check() {
+  local model_max="${1:-123472}"
+  local caller="${2:-claude-cerit-rich}"
+  local default_warn=$(( model_max - 40960 ))
+  local threshold="${CERIT_CONTEXT_WARN:-$default_warn}"
+
+  command -v cygpath >/dev/null 2>&1 || return 0
+  local winpath; winpath=$(cygpath -w "$(pwd)" 2>/dev/null) || return 0
+  local encoded; encoded=$(printf '%s' "$winpath" | tr ':\\' '--')
+  local proj_dir="$HOME/.claude/projects/$encoded"
+  [ -d "$proj_dir" ] || return 0
+
+  local jsonl
+  jsonl=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
+  [ -n "$jsonl" ] || return 0
+
+  local tokens
+  tokens=$(python -c "
+import json, sys
+last = 0
+with open(sys.argv[1], 'r', encoding='utf-8', errors='replace') as f:
+    for line in f:
+        try:
+            o = json.loads(line)
+            if o.get('type') != 'assistant': continue
+            if o.get('isSidechain'): continue
+            u = o.get('message', {}).get('usage') or {}
+            total = (u.get('input_tokens') or 0) \
+                  + (u.get('cache_creation_input_tokens') or 0) \
+                  + (u.get('cache_read_input_tokens') or 0)
+            if total: last = total
+        except Exception:
+            pass
+print(last)
+" "$jsonl" 2>/dev/null)
+  [ -n "$tokens" ] || tokens=0
+
+  if [ "$tokens" -lt "$threshold" ]; then
+    return 0
+  fi
+
+  local headroom=$(( model_max - tokens ))
+  echo
+  echo "  ----------------------------------------------------------------------"
+  echo "  WARNING ($caller): existing session is large"
+  echo "    cwd            : $(pwd)"
+  echo "    last input_tok : $tokens"
+  echo "    model max ctx  : $model_max"
+  echo "    headroom       : $headroom (need >32K for /compact to fit)"
+  echo
+  echo "  /compact under this model will likely return HTTP 400 if you continue."
+  echo
+  echo "  Options:"
+  echo "    1) Continue anyway (you can /clear inside Claude Code)"
+  echo "    2) Quit and compact via native claude        ->  claude   then /compact"
+  echo "    3) Quit and compact via CERIT qwen3-coder    ->  claude-cerit-medium  then /compact   (262K)"
+  echo "    4) Quit and compact via CERIT llama-4-scout  ->  claude-cerit-long    then /compact   (300K)"
+  echo "    Q) Quit"
+  echo "  ----------------------------------------------------------------------"
+  printf "  Choose [1/2/3/4/Q]: "
+  local choice
+  read -r -n1 choice
+  echo
+  case "$choice" in
+    1) return 0 ;;
+    2) echo "  -> run: claude               (then /compact, exit, re-run $caller)"; return 1 ;;
+    3) echo "  -> run: claude-cerit-medium  (then /compact, exit, re-run $caller)"; return 1 ;;
+    4) echo "  -> run: claude-cerit-long    (then /compact, exit, re-run $caller)"; return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Internal: ensure rewrite proxy is up on :9999.
+_cerit_proxy_up() {
+  local proxy_script="$HOME/dev/cerit-rewrite-proxy.py"
+  [ -f "$proxy_script" ] || { echo "missing $proxy_script" >&2; return 1; }
+  if ! (echo > /dev/tcp/127.0.0.1/9999) 2>/dev/null; then
+    echo "starting rewrite proxy on :9999" >&2
+    nohup python3 "$proxy_script" >/tmp/cerit-rewrite-proxy.log 2>&1 &
+    disown
+    sleep 1
+  fi
+}
+
+claude-cerit-rich() {
+  local tokfile="$HOME/.config/cerit/token"
+  [ -r "$tokfile" ] || { echo "claude-cerit-rich: missing $tokfile" >&2; return 1; }
+  _cerit_context_check 123472 claude-cerit-rich || return 1
+  _cerit_proxy_up || return 1
+  ANTHROPIC_BASE_URL="http://127.0.0.1:9999/" \
+  ANTHROPIC_AUTH_TOKEN="$(cat "$tokfile")" \
+  ANTHROPIC_API_KEY="$(cat "$tokfile")" \
+  ANTHROPIC_MODEL="claude-sonnet-4-6" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="claude-sonnet-4-6" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-4-6" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="claude-haiku-4-5" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=110000 \
+  MAX_THINKING_TOKENS=0 \
+  DISABLE_TELEMETRY=1 \
+  DISABLE_ERROR_REPORTING=1 \
+  command claude --settings "$HOME/dev/cerit-subagents/cerit-claude-settings.json" \
+    --append-system-prompt "$(cat "$HOME/dev/cerit-subagents/cerit-system-prompt-append.txt" 2>/dev/null)" "$@"
+}
+
+# Medium-context fallback: routes ANTHROPIC_MODEL=claude-cerit-medium -> qwen3-coder.
+# CERIT-deployed limit 262K. Use for the 80K-220K overflow band.
+claude-cerit-medium() {
+  local tokfile="$HOME/.config/cerit/token"
+  [ -r "$tokfile" ] || { echo "claude-cerit-medium: missing $tokfile" >&2; return 1; }
+  _cerit_context_check 262144 claude-cerit-medium || return 1
+  _cerit_proxy_up || return 1
+  ANTHROPIC_BASE_URL="http://127.0.0.1:9999/" \
+  ANTHROPIC_AUTH_TOKEN="$(cat "$tokfile")" \
+  ANTHROPIC_API_KEY="$(cat "$tokfile")" \
+  ANTHROPIC_MODEL="claude-cerit-medium" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="claude-cerit-medium" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="claude-cerit-medium" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="claude-cerit-medium" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=230000 \
+  MAX_THINKING_TOKENS=0 \
+  DISABLE_TELEMETRY=1 \
+  DISABLE_ERROR_REPORTING=1 \
+  command claude --settings "$HOME/dev/cerit-subagents/cerit-claude-settings.json" \
+    --append-system-prompt "$(cat "$HOME/dev/cerit-subagents/cerit-system-prompt-append.txt" 2>/dev/null)" "$@"
+}
+
+# Long-context fallback: routes ANTHROPIC_MODEL=claude-cerit-long -> llama-4-scout-17b-16e-instruct.
+# CERIT-deployed limit 300K (NOT the 10M nominal). Use when even claude-cerit-medium
+# can't fit the session.
+claude-cerit-long() {
+  local tokfile="$HOME/.config/cerit/token"
+  [ -r "$tokfile" ] || { echo "claude-cerit-long: missing $tokfile" >&2; return 1; }
+  _cerit_context_check 300000 claude-cerit-long || return 1
+  _cerit_proxy_up || return 1
+  ANTHROPIC_BASE_URL="http://127.0.0.1:9999/" \
+  ANTHROPIC_AUTH_TOKEN="$(cat "$tokfile")" \
+  ANTHROPIC_API_KEY="$(cat "$tokfile")" \
+  ANTHROPIC_MODEL="claude-cerit-long" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="claude-cerit-long" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="claude-cerit-long" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="claude-cerit-long" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=270000 \
+  MAX_THINKING_TOKENS=0 \
+  DISABLE_TELEMETRY=1 \
+  DISABLE_ERROR_REPORTING=1 \
+  command claude --settings "$HOME/dev/cerit-subagents/cerit-claude-settings.json" \
+    --append-system-prompt "$(cat "$HOME/dev/cerit-subagents/cerit-system-prompt-append.txt" 2>/dev/null)" "$@"
+}
+
+claude-cerit-ping() {
+  local tokfile="$HOME/.config/cerit/token"
+  [ -r "$tokfile" ] || { echo "missing $tokfile" >&2; return 1; }
+  local key; key="$(cat "$tokfile")"
+  curl -sS -w "\nHTTP %{http_code} | ttfb %{time_starttransfer}s | total %{time_total}s\n" \
+    -H "Authorization: Bearer $key" \
+    -H "x-api-key: $key" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "Content-Type: application/json" \
+    https://llm.ai.e-infra.cz/v1/messages \
+    -d '{"model":"gemma4","max_tokens":32,"messages":[{"role":"user","content":"Reply with exactly: PONG"}]}' \
+  | tail -5
+}
+
+claude-backend() {
+  if [ -n "$ANTHROPIC_BASE_URL" ]; then
+    echo "CERIT ($ANTHROPIC_BASE_URL) - model=${ANTHROPIC_MODEL:-default}"
+  else
+    echo "Anthropic native (default ~/.claude/.credentials.json)"
+  fi
+}
+
+cerit-subagents() {
+  # External subagent orchestrator built on the Anthropic Claude Agent SDK.
+  # See ~/dev/cerit-subagents/cerit_subagents.py — defines roles `explorer`,
+  # `summarizer`, `bash-worker`, each with its own tool whitelist + model.
+  # Routes through the same rewrite proxy as claude-cerit-rich, so context
+  # is isolated per call and the parent main thread only sees the final string.
+  local script="$HOME/dev/cerit-subagents/cerit_subagents.py"
+  local py="$HOME/dev/cerit-subagents/venv/Scripts/python.exe"
+  [ -f "$py" ]     || py="$HOME/dev/cerit-subagents/venv/bin/python"   # POSIX
+  [ -f "$script" ] || { echo "cerit-subagents: missing $script" >&2; return 1; }
+  [ -x "$py" ]     || { echo "cerit-subagents: missing $py" >&2; return 1; }
+  _cerit_proxy_up || return 1
+  command "$py" "$script" "$@"
+}
+
+claude-bench() {
+  local prompt="${1:-Reply with exactly: PONG}"
+  local out_native out_cerit
+  local t0 t1 t2
+  echo "=== native claude (Anthropic) ==="
+  t0=$(date +%s.%N)
+  out_native=$(command claude --print -p "$prompt" 2>&1)
+  t1=$(date +%s.%N)
+  printf '%s\n' "$out_native"
+  echo
+  echo "=== claude-cerit (CERIT / gemma4) ==="
+  out_cerit=$(claude-cerit --print -p "$prompt" 2>&1)
+  t2=$(date +%s.%N)
+  printf '%s\n' "$out_cerit"
+  echo
+  echo "=== timing ==="
+  awk -v a="$t0" -v b="$t1" -v c="$t2" 'BEGIN{
+    printf "  native : %.2fs\n", b-a;
+    printf "  CERIT  : %.2fs\n", c-b;
+  }'
+}
+# --- end Claude Code backend switcher ---

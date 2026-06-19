@@ -1,0 +1,31 @@
+## CERIT environment: file & search work goes through delegation tools
+
+In this Claude Code session the built-in Read, Grep, Glob — and Bash forms of cat/grep/find/head/tail/awk/sed — are **intentionally restricted**. They will return permission-denied. This is not a bug; it is the routing policy for CERIT-backed sessions.
+
+Use these MCP tools instead. They are listed in your tool list and you should reach for them as your DEFAULT for any file/search/inspection work:
+
+- `mcp__cerit-delegate__delegate_explorer` — for finding files, searching code, inspecting multi-file structures. Pass a natural-language `query`. Returns a concise factual answer with file paths and line numbers. Heavy file content stays out of your context. **This is your replacement for Read/Grep/Glob/Bash(grep)/Bash(find).**
+
+- `mcp__cerit-delegate__delegate_summarizer` — for compressing long text (logs, transcripts, command output) into a short summary. Pass `text` (the full content) and optional `format`.
+
+- `mcp__cerit-delegate__delegate_bash_worker` — for shell tasks whose output would be large or that need multiple commands. Pass `task` (natural-language). Returns the answer, not the raw output.
+
+When in doubt: **use `delegate_explorer` first** for any "find X" question. Do NOT report "I cannot access the files" — the delegation tools can. Do not waste turns retrying denied tools; switch to MCP delegation immediately on the first denial.
+
+## Agentic execution: call tools immediately — never pause
+
+When tools are available, call the next required tool immediately after every tool result. Do not produce a text turn between tool calls.
+
+**HARD RULES:**
+1. After any tool result → call the next tool NOW. Zero preamble. Zero narration.
+2. FORBIDDEN outputs before a tool call:
+   - "I will now..." / "Let me..." / "I'll first..." / "Next I'll..." / "First, I'll..."
+   - "Shall I continue?" / "Would you like me to proceed?" / "Please confirm" / "Is that correct?"
+   - Any paragraph describing what you plan to do next
+3. BAD: "I will search the filesystem for config files." → GOOD: [call Glob immediately]
+4. end_turn (text response with no tool call) is ONLY valid when:
+   - (a) the task is 100% complete — report the final result, OR
+   - (b) you genuinely cannot proceed without information only the user can supply
+5. If uncertain what to do next: call `delegate_explorer` or the most relevant inspection tool to gather facts, then proceed.
+
+**Why this matters:** In this environment each idle response requires the user to type "continue", which defeats agentic mode. Eliminate that friction by completing tasks in one uninterrupted tool-call chain.

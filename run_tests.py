@@ -24,6 +24,24 @@ Usage:
                          [--category A,B,C]
                          [--parallel 1|2]
                          [--no-judge]
+                         [--timeout-scale FLOAT]
+
+CUSTOMISATION
+-------------
+The test suite references several directories. Set these environment variables
+to point to your own project structure before running, or edit the path
+constants in the "Base test suite paths" block below directly:
+
+  CERIT_TOOLS_DIR   — directory of Python scripts to analyse/test
+                      (default: ~/dev/my_project/tools)
+  CERIT_MD_DIR      — root of your main project/research directory
+                      (default: ~/dev/my_project)
+  CERIT_ZOTERO_DIR  — a Zotero-based literature agent directory
+                      (default: ~/.zotero-lit-agent)
+  CERIT_DEV_DIR     — your ~/dev equivalent
+                      (default: ~/dev)
+  CERIT_MEM_DIR     — Claude Code memory directory
+                      (default: ~/.claude/projects/memory)
 """
 
 from __future__ import annotations
@@ -99,18 +117,20 @@ COMMON_ENV = {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 }
 
-# ── Base test suite (T1–T7) ───────────────────────────────────────────────────
+# ── Base test suite paths (customise via ENV or edit directly) ────────────────
 
-TOOLS_DIR = str(HOME / "dev/protein_efield_toy_model/tools")
-MD_DIR    = str(HOME / "dev/protein_efield_toy_model")
-ZOTERO    = str(HOME / ".zotero-lit-agent")
-DEV       = str(HOME / "dev")
-MEM_DIR   = str(HOME / ".claude/projects/-home-cifra/memory")
+TOOLS_DIR = os.environ.get("CERIT_TOOLS_DIR", str(HOME / "dev/my_project/tools"))
+MD_DIR    = os.environ.get("CERIT_MD_DIR",    str(HOME / "dev/my_project"))
+ZOTERO    = os.environ.get("CERIT_ZOTERO_DIR", str(HOME / ".zotero-lit-agent"))
+DEV       = os.environ.get("CERIT_DEV_DIR",   str(HOME / "dev"))
+MEM_DIR   = os.environ.get("CERIT_MEM_DIR",   str(HOME / ".claude/projects/memory"))
+
+# ── Base test suite (T1–T7) ───────────────────────────────────────────────────
 
 TESTS_BASE = [
     {
         "id": "T1", "suite": "base", "category": "F",
-        "name": "A2507 tools catalogue",
+        "name": "Project tools catalogue",
         "cwd": TOOLS_DIR,
         "prompt": (
             "List every Python file in the current directory. "
@@ -158,9 +178,9 @@ TESTS_BASE = [
         "name": "Memory consistency audit",
         "cwd": str(HOME),
         "prompt": (
-            "Read the file .claude/projects/-home-cifra/memory/MEMORY.md. "
+            "Read the file .claude/projects/memory/MEMORY.md. "
             "Find the 5 memory file slugs linked in the TOP-PRIORITY RULES section. "
-            "For each slug: read .claude/projects/-home-cifra/memory/<slug>.md. "
+            "For each slug: read .claude/projects/memory/<slug>.md. "
             "Check: (a) does the file exist, (b) does the frontmatter 'description:' field "
             "match the one-line hook in MEMORY.md (roughly), (c) is there a 'type:' field. "
             "Report a table: slug | exists | description_matches | has_type"
@@ -194,7 +214,7 @@ TESTS_BASE = [
             "(c) top-5 tool names by call count, (d) last input_tokens value found, "
             "(e) count of idle-stop turns (assistant turns with no tool_use block). "
             "After writing: find the most recently modified *.jsonl in "
-            "~/.claude/projects/-home-cifra/ (use Bash to find it), "
+            "~/.claude/projects/ (use Bash to find it), "
             "then run: python3 /tmp/cerit_session_stats.py <that_file> "
             "and print the full output."
         ),

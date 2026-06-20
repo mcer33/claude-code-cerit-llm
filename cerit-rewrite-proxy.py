@@ -15,7 +15,8 @@ Interventions (in order of application):
    model in FALLBACK_CHAIN.
 
 CERIT server config (confirmed by Lukáš Hejtmánek, 2026-06-19):
-- kimi         → admin-recommended alias → kimi-k2.6, sglang, --tool-call-parser kimi_k2, tools ✓
+- kimi         → admin-recommended alias → kimi-k2.7 (sglang, --tool-call-parser kimi_k2, tools ✓,
+                  --max-prefill-tokens 131072 — requests >131K tokens will overflow to qwen3.5-122b)
 - qwen3.5-122b → sglang, --tool-call-parser qwen3_coder, tools ✓
   (qwen3-coder / agentic / coder are aliases for qwen3.5-122b)
 - deepseek-v4-pro-thinking → vLLM, --tool-call-parser deepseek_v4, --enable-auto-tool-choice,
@@ -56,13 +57,13 @@ REQUEST_LOCK = threading.Lock()
 # Consolidated catalogue of every CERIT model name referenced by this proxy.
 # 'guaranteed'   — production tier, stable availability.
 # 'experimental' — bleeding-edge tier (may be withdrawn; monitor for regressions).
-# Aliases ("qwen3-coder", "agentic", "coder" → qwen3.5-122b; "kimi" → kimi-k2.6)
+# Aliases ("qwen3-coder", "agentic", "coder" → qwen3.5-122b, same model; "kimi" → kimi-k2.7)
 # are listed as their own entries because the proxy routes/falls back on them
 # directly.
 CERIT_MODELS = {
     "guaranteed": {
         "gemma4":                       "fast text-only default; unreliable tool output",
-        "kimi":                         "admin alias → kimi-k2.6 (sglang, --tool-call-parser kimi_k2)",
+        "kimi":                         "admin alias → kimi-k2.7 (sglang, --tool-call-parser kimi_k2, max-prefill 131K)",
         "qwen3.5-122b":                 "sglang, 122B MoE, --tool-call-parser qwen3_coder",
         "qwen3-coder":                  "alias for qwen3.5-122b",
         "agentic":                      "alias for qwen3.5-122b",
@@ -91,13 +92,13 @@ MODEL_OVERRIDES = {
     "claude-cerit-medium":  "qwen3.5-122b",                    # sglang, 122B MoE, tools ✓
     "claude-cerit-agentic": "agentic",                         # CERIT alias → qwen3.5-122b
     "claude-cerit-long":    "llama-4-scout-17b-16e-instruct",  # long context
-    "claude-cerit-kimi":    "kimi",                            # admin alias → kimi-k2.6 sglang
+    "claude-cerit-kimi":    "kimi",                            # admin alias → kimi-k2.7 sglang (max-prefill 131K)
     "claude-cerit-deep":    "deepseek-v4-pro-thinking",        # vLLM, 1M ctx, tools ✓
     "claude-cerit-glm":     "glm-5.2",                         # ≈ Opus 4.8; thinking disabled by proxy
 }
 
 # "qwen3-coder" / "agentic" / "coder" are aliases for "qwen3.5-122b" on CERIT.
-# "kimi" is admin-recommended alias → kimi-k2.6 (use "kimi", not "kimi-k2.6" directly).
+# "kimi" is admin-recommended alias → kimi-k2.7 (use "kimi", not version-pinned names — alias tracks current).
 
 FALLBACK_CHAIN = {
     "gemma4":                            ["kimi", "qwen3.5-122b"],

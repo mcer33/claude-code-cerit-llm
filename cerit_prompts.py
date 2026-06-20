@@ -5,6 +5,11 @@ strings are appended to the system prompt of tool-using requests.
 """
 from __future__ import annotations
 
+# Sentinel written by the model at the end of its FINAL response when the task
+# is fully complete. Detected by run_tests.py to disambiguate genuine completion
+# from success_re mismatch.
+TASK_COMPLETE_MARKER = "TASK_COMPLETE"
+
 # ── Agentic continuation rule ─────────────────────────────────────────────────
 # Injected at the END of the system prompt of every tool-using request.
 # Imperative form: research showed polite phrasings have lower compliance than
@@ -23,6 +28,8 @@ CERIT_CONTINUATION = (
     "All other turns: CALL A TOOL. No exceptions.\n"
     "If uncertain what to do: call delegate_explorer or the most relevant\n"
     "  inspection tool to gather facts, then proceed.\n"
+    "Completion signal: when the task is 100% done and you are writing your\n"
+    "  final text response, end it with the single line: TASK_COMPLETE\n"
     "────────────────────────────────────────────────────────────\n"
 )
 

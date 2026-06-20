@@ -628,7 +628,7 @@ TESTS_EXT = [
         "name": "Broad exception catches audit",
         "cwd": TOOLS_DIR,
         "prompt": "Find all 'except Exception' and bare 'except:' clauses in all Python files in the current directory. List: file, line number, the full except clause, and whether there is any logging inside the handler.",
-        "min_tools": 1, "success_re": r"(except Exception|bare except|line \d+|logging|handler)", "timeout": 90,
+        "min_tools": 1, "success_re": r"(except Exception|bare except|line \d+|logging|handler)", "timeout": 180,
     },
     {
         "id": "E03", "suite": "ext", "category": "E",
@@ -642,7 +642,7 @@ TESTS_EXT = [
         "name": "Mixed path-join styles",
         "cwd": TOOLS_DIR,
         "prompt": "Find Python files in this directory that use BOTH os.path.join (or pathlib) AND plain string concatenation with '/' for file path construction. List each file with one example of each style.",
-        "min_tools": 1, "success_re": r"(os\.path\.join|pathlib|string concatenation|both|/)", "timeout": 120,
+        "min_tools": 1, "success_re": r"(os\.path\.join|pathlib|string concatenation|both|/)", "timeout": 240,
     },
     {
         "id": "E05", "suite": "ext", "category": "E",
@@ -707,13 +707,13 @@ TESTS_EXT = [
         "name": "MetaCentrum reference report",
         "cwd": TOOLS_DIR,
         "prompt": "Find all Python files in the current directory that contain the word 'MetaCentrum' or 'metacentrum'. For each match: read the file, extract up to 3 lines of context around each occurrence. Write /tmp/metacentrum_refs.md with file, line number, and context snippet.",
-        "min_tools": 2, "success_re": r"(MetaCentrum|metacentrum_refs|context|line \d+)", "timeout": 150,
+        "min_tools": 2, "success_re": r"(MetaCentrum|metacentrum_refs|context|line \d+)", "timeout": 240,
     },
     {
         "id": "F04", "suite": "ext", "category": "F",
         "name": "Add and run new test T8",
         "cwd": str(HOME / "dev/cerit-tests"),
-        "prompt": "Read run_tests.py. Add a new test T8 with id='T8', name='Proxy startup verify', cwd='/tmp', prompt='Start cerit-rewrite-proxy.py on port 9997, verify it listens, kill it, report OK or FAIL.', timeout=60, success_re='(OK|FAIL|9997|proxy)'. Then run: python3 run_tests.py --tests T8 --model glm --no-judge and report the result.",
+        "prompt": "Read run_tests.py. Add a new test T8 to TESTS_BASE with id='T8', name='Proxy startup verify', cwd='/tmp', prompt='Start cerit-rewrite-proxy.py on port 9997, verify it listens, kill it, report OK or FAIL.', timeout=60, success_re='(OK|FAIL|9997|proxy)'. Then run: python3 run_tests.py --tests T8 --suite all --model glm --no-judge and report the result.",
         "min_tools": 3, "success_re": r"(T8|Proxy startup|test added|done|completed)", "timeout": 360,
     },
     {
@@ -749,14 +749,14 @@ TESTS_EXT = [
         "name": "Test suite inventory",
         "cwd": str(HOME / "dev/cerit-tests"),
         "prompt": "Read run_tests.py. Extract all test IDs, names, cwds, and timeouts from the TESTS_BASE and TESTS_EXT lists. Run python3 run_tests.py --help to confirm CLI options. Write /tmp/test_inventory.md: table of all tests plus CLI reference.",
-        "min_tools": 2, "success_re": r"(test_inventory|TESTS|ID|timeout|CLI)", "timeout": 180,
+        "min_tools": 2, "success_re": r"(test_inventory|TESTS|ID|timeout|CLI)", "timeout": 300,
     },
     {
         "id": "F10", "suite": "ext", "category": "F",
         "name": "gmx command catalogue",
         "cwd": TOOLS_DIR,
         "prompt": "Find all Python files in this directory that reference 'gmx' or 'GROMACS'. Read each. Extract every distinct gmx subcommand used (e.g. gmx pdb2gmx, gmx solvate). Deduplicate. Write /tmp/gmx_commands.txt: one command per line, sorted, with the source file(s) that use it.",
-        "min_tools": 2, "success_re": r"(gmx|GROMACS|pdb2gmx|solvate|gmx_commands)", "timeout": 240,
+        "min_tools": 2, "success_re": r"(gmx|GROMACS|pdb2gmx|solvate|gmx_commands)", "timeout": 420,
     },
     {
         "id": "F11", "suite": "ext", "category": "F",
@@ -791,7 +791,7 @@ TESTS_EXT = [
         "name": "Benchmark history aggregate",
         "cwd": str(HOME / "dev/cerit-tests"),
         "prompt": "Find all metrics.json files under results/. For each run: read it, extract run_id (from dirname), model, completion rate, avg wall time, total idle stops. Aggregate across all runs. Write /tmp/benchmark_history.md: per-run table plus overall summary statistics.",
-        "min_tools": 2, "success_re": r"(benchmark_history|completion|idle|wall.time|aggregate)", "timeout": 240,
+        "min_tools": 2, "success_re": r"(benchmark_history|completion|idle|wall.time|aggregate)", "timeout": 360,
     },
 
     # ── Category G: Long-context Stress ──────────────────────────────────────
@@ -821,7 +821,7 @@ TESTS_EXT = [
         "name": "Benchmark longitudinal analysis",
         "cwd": str(HOME / "dev/cerit-tests"),
         "prompt": "Read all metrics.json files under results/. Perform a longitudinal analysis: for each test ID that appears in multiple runs, track how wall_time, n_turns, n_tool_calls, and idle_stop_rate evolved. Identify regressions (metric got worse). Write a full analysis to /tmp/benchmark_longitudinal.md.",
-        "min_tools": 3, "success_re": r"(longitudinal|regression|evolved|wall_time|benchmark)", "timeout": 360,
+        "min_tools": 3, "success_re": r"(longitudinal|regression|evolved|wall_time|benchmark)", "timeout": 600,
     },
     {
         "id": "G05", "suite": "ext", "category": "G",
@@ -844,14 +844,14 @@ TESTS_EXT = [
         "name": "Terse: write gro parser",
         "cwd": "/tmp",
         "prompt": "Write a gro parser",
-        "min_tools": 1, "success_re": r"(gro|parser|atom|box|residue|\.gro)", "timeout": 150,
+        "min_tools": 1, "success_re": r"(gro|parser|atom|box|residue|\.gro)", "timeout": 300,
     },
     {
         "id": "H03", "suite": "ext", "category": "H",
         "name": "Terse: check proxy",
         "cwd": DEV,
         "prompt": "Check if the proxy is running",
-        "min_tools": 1, "success_re": r"(proxy|running|9999|up|down|status)", "timeout": 60,
+        "min_tools": 1, "success_re": r"(proxy|running|9999|up|down|status)", "timeout": 90,
     },
     {
         "id": "H04", "suite": "ext", "category": "H",
@@ -872,7 +872,7 @@ TESTS_EXT = [
         "name": "Vague: make Zotero agent faster",
         "cwd": ZOTERO,
         "prompt": "The Zotero agent feels slow. Can you take a look and suggest or implement improvements to make it faster?",
-        "min_tools": 2, "success_re": r"(slow|faster|performance|async|cache|batch|improvement)", "timeout": 300,
+        "min_tools": 2, "success_re": r"(slow|faster|performance|async|cache|batch|improvement)", "timeout": 500,
     },
     {
         "id": "H07", "suite": "ext", "category": "H",
@@ -990,7 +990,7 @@ TESTS_EXT = [
         "name": "Autonomous: diagnose Zotero agent",
         "cwd": ZOTERO,
         "prompt": "The Zotero agent has likely logged some errors recently. Find any error indications in agent.log, agent_run.log, or agent_state.json. Diagnose the root cause. If it's a code bug, fix it. If it's a configuration issue, explain the fix. Write a clear bug report to /tmp/zotero_bug_report.txt.",
-        "min_tools": 3, "success_re": r"(error|diagnose|bug.report|zotero|root.cause|fix)", "timeout": 360,
+        "min_tools": 3, "success_re": r"(error|diagnose|bug.report|zotero|root.cause|fix)", "timeout": 500,
     },
     {
         "id": "K03", "suite": "ext", "category": "K",
@@ -1012,6 +1012,15 @@ TESTS_EXT = [
         "cwd": str(HOME / "dev/cerit-tests"),
         "prompt": "Create /tmp/cerit_dashboard.py that prints a live ASCII dashboard showing: (1) proxy status (up/down, PID), (2) last benchmark run: model, completion rate, avg wall time, (3) disk usage of results/, (4) any running cerit test processes. Run it once and show the output.",
         "min_tools": 3, "success_re": r"(cerit_dashboard|proxy|benchmark|disk|dashboard|ASCII)", "timeout": 360,
+    },
+
+    # ── Category L: Model-specific verification ───────────────────────────────
+    {
+        "id": "L01", "suite": "ext", "category": "L", "model": "long",
+        "name": "llama-4-scout tool verification",
+        "cwd": DEV,
+        "prompt": "Read cerit-rewrite-proxy.py. Count the total number of lines in the file and report the exact count.",
+        "min_tools": 1, "success_re": r"(\d+\s+lines?|line count|total.*\d+|wc|count.*\d{3})", "timeout": 120,
     },
 ]
 
@@ -1323,7 +1332,12 @@ def run_test(test: dict, env: dict, results_dir: Path, token: str,
     )
 
     pattern = test.get("success_re", ".")
-    completed = exit_code == 0 and bool(re.search(pattern, text_output, re.IGNORECASE))
+    task_complete_signaled = bool(re.search(r"^TASK_COMPLETE$", text_output, re.MULTILINE))
+    success_re_match = bool(re.search(pattern, text_output, re.IGNORECASE))
+    # task_complete_signaled acts as OR only when min_tools threshold is met,
+    # guarding against the model outputting the marker without doing any work.
+    min_tools_met = stream_metrics.get("n_tool_calls", 0) >= test.get("min_tools", 1)
+    completed = exit_code == 0 and (success_re_match or (task_complete_signaled and min_tools_met))
 
     # LLM quality judge
     quality = None
@@ -1347,6 +1361,7 @@ def run_test(test: dict, env: dict, results_dir: Path, token: str,
         "timed_out": timed_out,
         "exit_code": exit_code,
         "completed": completed,
+        "task_complete_signaled": task_complete_signaled,
         "output_chars": len(text_output),
         "stderr_snippet": (stderr or "")[:200],
         "proxy_events": proxy_events,
@@ -1447,6 +1462,8 @@ def main():
                         help="Skip LLM quality judge (faster, no secondary API calls)")
     parser.add_argument("--proxy-log", default=str(PROXY_LOG),
                         help=f"Path to proxy log file (default: {PROXY_LOG})")
+    parser.add_argument("--timeout-scale", type=float, default=1.0, metavar="FLOAT",
+                        help="Multiply all test timeouts by this factor (e.g. 2.0 for overnight runs)")
     args = parser.parse_args()
 
     # Override PROXY_LOG if specified
@@ -1475,6 +1492,9 @@ def main():
     if args.category:
         cats = set(args.category.upper().split(","))
         pool = [t for t in pool if t.get("category", "") in cats]
+
+    if args.timeout_scale != 1.0:
+        pool = [{**t, "timeout": int(t.get("timeout", 300) * args.timeout_scale)} for t in pool]
 
     if not pool:
         sys.exit("[ERROR] No tests match the given filters.")

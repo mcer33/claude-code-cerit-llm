@@ -109,6 +109,15 @@ MODEL_PRESETS = {
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-cerit-glm",
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "110000",
     },
+    # Native Anthropic API — no ANTHROPIC_BASE_URL (uses real Anthropic endpoint)
+    "native": {
+        "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+    },
+    "haiku": {
+        "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+    },
 }
 COMMON_ENV = {
     "MAX_THINKING_TOKENS": "0",
@@ -124,6 +133,8 @@ MD_DIR    = os.environ.get("CERIT_MD_DIR",    str(HOME / "dev/my_project"))
 ZOTERO    = os.environ.get("CERIT_ZOTERO_DIR", str(HOME / ".zotero-lit-agent"))
 DEV       = os.environ.get("CERIT_DEV_DIR",   str(HOME / "dev"))
 MEM_DIR   = os.environ.get("CERIT_MEM_DIR",   str(HOME / ".claude/projects/memory"))
+# Comparison benchmark: clone of public cerit-llm repo (self-contained, used for native vs CERIT tests)
+COMP_DIR  = os.environ.get("CERIT_COMP_DIR",  str(HOME / "dev/cerit-comparison-bench"))
 
 # ── Base test suite (T1–T7) ───────────────────────────────────────────────────
 
@@ -1044,7 +1055,152 @@ TESTS_EXT = [
     },
 ]
 
-ALL_TESTS = TESTS_BASE + TESTS_EXT
+# ── Comparison suite (N01–N10) — native Anthropic vs CERIT GLM-5.2 ──────────
+# CWD: COMP_DIR (clone of public github.com/mcer33/claude-code-cerit-llm repo)
+# Set CERIT_COMP_DIR env or run: git clone https://github.com/mcer33/claude-code-cerit-llm ~/dev/cerit-comparison-bench
+# Run both models:
+#   python3 run_tests.py --suite comp --model glm
+#   python3 run_tests.py --suite comp --model native
+
+TESTS_COMP = [
+    {
+        "id": "N01", "suite": "comp", "category": "N",
+        "name": "List proxy interventions",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. "
+            "List the six proxy interventions in order, each with a one-sentence description of what it does. "
+            "Number them 1–6."
+        ),
+        "min_tools": 1,
+        "success_re": r"(tool sanitiz|continuation|turn.*guard|thinking.*disab|fallback|retry|429)",
+        "timeout": 90,
+    },
+    {
+        "id": "N02", "suite": "comp", "category": "N",
+        "name": "Grep stderr calls",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Search cerit-rewrite-proxy.py for all lines containing 'sys.stderr.write'. "
+            "Report: total count, then line numbers and content for the first 5 matches."
+        ),
+        "min_tools": 1,
+        "success_re": r"(line \d+|sys\.stderr|\d+ (lines|occurrences|match))",
+        "timeout": 60,
+    },
+    {
+        "id": "N03", "suite": "comp", "category": "N",
+        "name": "Write benchmark stats function",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Write a Python function `compute_stats(results: list) -> dict` where each element "
+            "is a dict with keys 'time_s' (float), 'completed' (bool), 'quality' (int or None). "
+            "Return a dict with 'mean_time', 'completion_rate', 'mean_quality' (None if no scores). "
+            "Include a proper docstring. Save to /tmp/comp_stats.py and print its full contents."
+        ),
+        "min_tools": 2,
+        "success_re": r"(def compute_stats|/tmp/comp_stats|mean_time|completion_rate)",
+        "timeout": 90,
+    },
+    {
+        "id": "N04", "suite": "comp", "category": "N",
+        "name": "Line count all .py files",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Run wc -l on every .py file in the current directory. "
+            "Report: which file has the most lines, which has the fewest, and the grand total across all files."
+        ),
+        "min_tools": 1,
+        "success_re": r"(\d{3,}|most lines|fewest|cerit.rewrite.proxy|grand total|total)",
+        "timeout": 60,
+    },
+    {
+        "id": "N05", "suite": "comp", "category": "N",
+        "name": "Extract constants + write file",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit_prompts.py and README.md. "
+            "From cerit_prompts.py: extract the exact string value of TASK_COMPLETE_MARKER. "
+            "From README.md: find the GitHub repo URL (starts with https://github.com/). "
+            "Write both to /tmp/comp_extract.txt in format:\n"
+            "TASK_COMPLETE_MARKER=<value>\n"
+            "GITHUB_URL=<url>\n"
+            "Then print the file contents to confirm."
+        ),
+        "min_tools": 3,
+        "success_re": r"(TASK_COMPLETE|github\.com|/tmp/comp_extract|mcer33)",
+        "timeout": 120,
+    },
+    {
+        "id": "N06", "suite": "comp", "category": "N",
+        "name": "Edit variable + revert",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "In cerit_idle_stop_reproducer.py, find the constant N_TRIALS. "
+            "Change its numeric value to 3. Read the file to confirm the change. "
+            "Then revert it back to its original value (5). Read again to confirm the revert."
+        ),
+        "min_tools": 4,
+        "success_re": r"(N_TRIALS|changed|reverted|confirmed|= 3|= 5)",
+        "timeout": 120,
+    },
+    {
+        "id": "N07", "suite": "comp", "category": "N",
+        "name": "3 most recently modified files",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Find the 3 most recently modified files in the current directory (any extension). "
+            "For each: filename, human-readable modification date, file size in bytes."
+        ),
+        "min_tools": 1,
+        "success_re": r"(\d{4}-\d{2}|\w+\.\w+|\d+ bytes?|modified|size)",
+        "timeout": 60,
+    },
+    {
+        "id": "N08", "suite": "comp", "category": "N",
+        "name": "Explain run_test() function",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read the run_test() function in run_tests.py (it handles one test end to end). "
+            "Explain in exactly 5 bullet points what happens from when the function is called "
+            "to when it returns, covering: subprocess launch, timeout handling, "
+            "stream-json parsing, quality judging, and returned result structure."
+        ),
+        "min_tools": 1,
+        "success_re": r"(subprocess|stream.json|judge|timeout|result|parse)",
+        "timeout": 90,
+    },
+    {
+        "id": "N09", "suite": "comp", "category": "N",
+        "name": "Write + run port-check script",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Write a bash script at /tmp/comp_port_check.sh that: "
+            "checks whether port 9999 is in use (using ss -tlnp or lsof -i :9999 or netstat), "
+            "prints 'PROXY_UP PID=<pid>' if a process is listening, 'PROXY_DOWN' otherwise. "
+            "Make it executable with chmod +x and run it. Show the output."
+        ),
+        "min_tools": 2,
+        "success_re": r"(PROXY_UP|PROXY_DOWN|9999|/tmp/comp_port_check)",
+        "timeout": 90,
+    },
+    {
+        "id": "N10", "suite": "comp", "category": "N",
+        "name": "Cross-file import analysis",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py and cerit_prompts.py. "
+            "Identify which names (constants, strings, or functions) defined in cerit_prompts.py "
+            "are imported and used in cerit-rewrite-proxy.py. "
+            "For each: name, its value/purpose in cerit_prompts.py, which function in the proxy uses it."
+        ),
+        "min_tools": 2,
+        "success_re": r"(CERIT_CONTINUATION|cerit_prompts|import|used in|function|proxy)",
+        "timeout": 120,
+    },
+]
+
+ALL_TESTS = TESTS_BASE + TESTS_EXT + TESTS_COMP
 
 
 # ── LLM Quality Judge ─────────────────────────────────────────────────────────
@@ -1280,6 +1436,10 @@ def build_env(preset: str, token: str) -> dict:
     env.update(COMMON_ENV)
     env["ANTHROPIC_API_KEY"] = token
     env["ANTHROPIC_AUTH_TOKEN"] = token
+    # For native/haiku presets (no ANTHROPIC_BASE_URL in preset), unset any
+    # inherited ANTHROPIC_BASE_URL so requests go to the real Anthropic API.
+    if "ANTHROPIC_BASE_URL" not in MODEL_PRESETS[preset]:
+        env.pop("ANTHROPIC_BASE_URL", None)
     return env
 
 
@@ -1307,17 +1467,19 @@ def run_test(test: dict, env: dict, results_dir: Path, token: str,
         print(f"  [WARN] cwd not found, using {HOME}", flush=True)
         cwd = str(HOME)
 
-    # Ensure proxy is alive before each test; restart if dead
-    try:
-        import urllib.request as _ur
-        _ur.urlopen("http://127.0.0.1:9999/", timeout=3).close()
-    except Exception:
-        print(f"  [WARN] proxy down before {tid} — restarting...", flush=True)
-        subprocess.Popen(
-            ["python3", str(HOME / "dev/cerit-rewrite-proxy.py")],
-            stdout=subprocess.DEVNULL, stderr=open(str(PROXY_LOG), "a"),
-        )
-        time.sleep(4)
+    # Ensure proxy is alive before each test; skip for native/haiku (no proxy needed)
+    is_proxy = env.get("ANTHROPIC_BASE_URL", "").startswith("http://127.0.0.1:9999")
+    if is_proxy:
+        try:
+            import urllib.request as _ur
+            _ur.urlopen("http://127.0.0.1:9999/", timeout=3).close()
+        except Exception:
+            print(f"  [WARN] proxy down before {tid} — restarting...", flush=True)
+            subprocess.Popen(
+                ["python3", str(HOME / "dev/cerit-rewrite-proxy.py")],
+                stdout=subprocess.DEVNULL, stderr=open(str(PROXY_LOG), "a"),
+            )
+            time.sleep(4)
 
     proxy_offset = proxy_log_offset()
     t0 = time.time()
@@ -1469,11 +1631,11 @@ def main():
     global PROXY_LOG
     parser = argparse.ArgumentParser(description="CERIT workflow test runner — extended suite")
     parser.add_argument("--model", choices=list(MODEL_PRESETS), default="glm",
-                        help="CERIT model preset (default: glm = glm-5.2 with thinking disabled)")
+                        help="Model preset: glm (GLM-5.2 via proxy), native (claude-sonnet-4-6 real API), haiku (claude-haiku-4-5 real API), rich/medium/long/deep (CERIT via proxy)")
     parser.add_argument("--tests", default="",
                         help="Comma-separated test IDs to run, e.g. T1,A01,B03")
-    parser.add_argument("--suite", choices=["base", "ext", "all"], default="ext",
-                        help="Test suite: base (T1-T7), ext (110 new), all (117 total)")
+    parser.add_argument("--suite", choices=["base", "ext", "all", "comp"], default="ext",
+                        help="Test suite: base (T1-T7), ext (110 new), all (117 total), comp (N01-N10 native vs CERIT comparison)")
     parser.add_argument("--category", default="",
                         help="Comma-separated categories to run, e.g. A,B,D")
     parser.add_argument("--parallel", type=int, default=1, choices=[1, 2],

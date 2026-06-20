@@ -1662,6 +1662,8 @@ def main():
         pool = list(TESTS_BASE)
     elif args.suite == "ext":
         pool = list(TESTS_EXT)
+    elif args.suite == "comp":
+        pool = list(TESTS_COMP)
     else:
         pool = list(ALL_TESTS)
 

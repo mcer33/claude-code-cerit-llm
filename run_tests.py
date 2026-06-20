@@ -63,6 +63,7 @@ from pathlib import Path
 
 HOME = Path.home()
 CERIT_TOKEN_FILE = HOME / ".config/cerit/token"
+ANTHROPIC_KEY_FILE = HOME / ".config/anthropic/ufe_training_key"
 PROXY_LOG = Path("/tmp/cerit-rewrite-proxy.log")
 RESULTS_BASE = HOME / "dev/cerit-tests/results"
 CERIT_API = "https://llm.ai.e-infra.cz"
@@ -1434,8 +1435,19 @@ def build_env(preset: str, token: str) -> dict:
     env = dict(os.environ)
     env.update(MODEL_PRESETS[preset])
     env.update(COMMON_ENV)
-    env["ANTHROPIC_API_KEY"] = token
-    env["ANTHROPIC_AUTH_TOKEN"] = token
+    if preset in ("native", "haiku"):
+        # Native Anthropic API — use real key, not CERIT token
+        if ANTHROPIC_KEY_FILE.exists():
+            native_key = ANTHROPIC_KEY_FILE.read_text().strip()
+        else:
+            native_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not native_key:
+            sys.exit(f"[ERROR] Native preset needs Anthropic API key at {ANTHROPIC_KEY_FILE}")
+        env["ANTHROPIC_API_KEY"] = native_key
+        env["ANTHROPIC_AUTH_TOKEN"] = native_key
+    else:
+        env["ANTHROPIC_API_KEY"] = token
+        env["ANTHROPIC_AUTH_TOKEN"] = token
     # For native/haiku presets (no ANTHROPIC_BASE_URL in preset), unset any
     # inherited ANTHROPIC_BASE_URL so requests go to the real Anthropic API.
     if "ANTHROPIC_BASE_URL" not in MODEL_PRESETS[preset]:
@@ -1454,8 +1466,10 @@ def run_test(test: dict, env: dict, results_dir: Path, token: str,
     if test_model and test_model in MODEL_PRESETS:
         env = dict(env)
         env.update(MODEL_PRESETS[test_model])
-        env["ANTHROPIC_API_KEY"] = token
-        env["ANTHROPIC_AUTH_TOKEN"] = token
+        # Only apply CERIT token for proxy-based presets
+        if "ANTHROPIC_BASE_URL" in MODEL_PRESETS[test_model]:
+            env["ANTHROPIC_API_KEY"] = token
+            env["ANTHROPIC_AUTH_TOKEN"] = token
 
     cat = test.get("category", "?")
     print(f"\n{'='*64}", flush=True)

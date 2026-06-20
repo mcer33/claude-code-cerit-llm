@@ -25,8 +25,9 @@ CERIT server config (confirmed by Lukáš Hejtmánek, 2026-06-19):
 - gpt-oss-120b → alias "mini", 128K ctx, general tasks (guaranteed tier)
 All deployed models have tools and parsers configured. Idle-stop (33%) is
 therefore model-side behaviour, not server config — mitigated by CERIT_CONTINUATION.
-Note: kimi's thinking phase without tool_choice:any takes 500+ s; empirically
-qwen3.5-122b (qwen3-coder alias) is the best DEFAULT_TOOL_TARGET for Claude Code tasks.
+Note: kimi's thinking phase without tool_choice:any takes 500+ s.
+GLM-5.2 (thinking disabled) is the best DEFAULT_TOOL_TARGET: 494 s / 7/7 / 0 idle / 0 errors
+(run9, 2026-06-19). 117-test suite (run10): 103/117 (88%), 0 idle stops, avg quality 5.37/10.
 
 Run: python cerit-rewrite-proxy.py
 """
@@ -36,11 +37,42 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import request as urlreq
 from urllib.error import HTTPError
 
+RATE_LIMIT_STATUS = 429
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_WAIT_S = 5
+
 UPSTREAM = "https://llm.ai.e-infra.cz"
+
+REQUEST_COUNTER = 0
+REQUEST_LOCK = threading.Lock()
+
+# ── CERIT model registry ────────────────────────────────────────────────────
+# Consolidated catalogue of every CERIT model name referenced by this proxy.
+# 'guaranteed'   — production tier, stable availability.
+# 'experimental' — bleeding-edge tier (may be withdrawn; monitor for regressions).
+# Aliases ("qwen3-coder", "agentic", "coder" → qwen3.5-122b; "kimi" → kimi-k2.6)
+# are listed as their own entries because the proxy routes/falls back on them
+# directly.
+CERIT_MODELS = {
+    "guaranteed": {
+        "gemma4":                       "fast text-only default; unreliable tool output",
+        "kimi":                         "admin alias → kimi-k2.6 (sglang, --tool-call-parser kimi_k2)",
+        "qwen3.5-122b":                 "sglang, 122B MoE, --tool-call-parser qwen3_coder",
+        "qwen3-coder":                  "alias for qwen3.5-122b",
+        "agentic":                      "alias for qwen3.5-122b",
+        "deepseek-v4-pro-thinking":     "vLLM, 1M ctx, --tool-call-parser deepseek_v4",
+        "llama-4-scout-17b-16e-instruct": "long context; tool status unconfirmed",
+    },
+    "experimental": {
+        "glm-5.2": "≈ Opus 4.8; thinking ON by default (proxy disables for tool sessions)",
+    },
+}
 
 # Text-only / no-tools default. gemma4 is fast.
 DEFAULT_TARGET = "gemma4"
@@ -89,46 +121,11 @@ with open(TOKEN_FILE, "r", encoding="utf-8") as f:
 if not CERIT_TOKEN:
     sys.exit(f"[proxy] ERROR: token file {TOKEN_FILE} is empty — add your CERIT API key")
 
-# ── Agentic continuation rule ─────────────────────────────────────────────────
-# Injected at the END of the system prompt of every tool-using request.
-# Imperative form: research showed polite phrasings have lower compliance than
-# direct imperatives on RLHF-trained models.
-CERIT_CONTINUATION = (
-    "\n\n"
-    "────────────────────────────────────────────────────────────\n"
-    "AGENTIC EXECUTION — NON-NEGOTIABLE\n"
-    "────────────────────────────────────────────────────────────\n"
-    "When tools are available: call a tool immediately. Do not explain. Do not narrate.\n"
-    "FORBIDDEN before a tool call: 'I will now' / 'Let me' / 'I'll first' / 'Next I'll'\n"
-    "  / 'Shall I continue?' / 'Would you like me to proceed?' / 'Please confirm'\n"
-    "BAD: \"I will search the filesystem for X.\"  GOOD: [call Glob immediately]\n"
-    "end_turn is ONLY valid: (a) task 100% done — write your FULL final answer now,\n"
-    "  OR (b) you need information only the human can provide.\n"
-    "All other turns: CALL A TOOL. No exceptions.\n"
-    "If uncertain what to do: call delegate_explorer or the most relevant\n"
-    "  inspection tool to gather facts, then proceed.\n"
-    "────────────────────────────────────────────────────────────\n"
-)
-
-# Turn-count and repetition guard — appended as additional system text when triggered.
-# TURN_WARN_SOFT fires at turn 12: gentle nudge toward synthesis.
-# TURN_WARN_HARD fires at turn 20: imperative stop.
-# REPEAT_GUARD fires when any single tool is called ≥3 times in the last 30 messages.
-# Threshold is 3 (not 4): GLM-style models call 9+ tools per turn, so 4 fires too late.
-TURN_WARN_SOFT_TMPL = (
-    "\n\n[PROGRESS CHECK — turn {n}] You have taken {n} turns. "
-    "If the core task is substantially covered, stop gathering and write your FULL "
-    "synthesis now as a text response. Every turn past this point must move toward "
-    "closure, not additional exploration.\n"
-)
-TURN_WARN_HARD_TMPL = (
-    "\n\n[TURN LIMIT — turn {n}] STOP CALLING TOOLS. "
-    "Write your complete final answer RIGHT NOW as a text response. "
-    "You have enough information. Do not make any more tool calls.\n"
-)
-REPEAT_GUARD_TMPL = (
-    "\n\n[REPETITION GUARD] You have called '{tool}' {count} times with similar inputs. "
-    "You are in a loop. STOP. Write your synthesis from what you already know.\n"
+from cerit_prompts import (
+    CERIT_CONTINUATION,
+    REPEAT_GUARD_TMPL,
+    TURN_WARN_HARD_TMPL,
+    TURN_WARN_SOFT_TMPL,
 )
 
 MIN_MAX_TOKENS = 8192  # floor — CERIT models sometimes stop mid-sentence at 4096
@@ -149,7 +146,11 @@ COMPACT_RE = re.compile(
     r"|create a comprehensive summary of the conversation so it can be used"
     r"|summarize the conversation so far so that a new instance"
     r"|generate.*summary.*continue the conversation"
-    r"|Your task is to.*summary.*conversation)",
+    r"|Your task is to.*summary.*conversation"
+    r"|Erstell.*Zusammenfassung"
+    r"|fass.*zusammen"
+    r"|vytvo.*souhrn"
+    r"|shrn.*konverzaci)",
     re.IGNORECASE,
 )
 
@@ -227,6 +228,37 @@ _ANTHROPIC_TYPE_MAP: dict[str, tuple | None] = {
 }
 
 
+def _patch_single_tool(tool: dict) -> tuple[dict | None, bool]:
+    """Process one tool definition.
+
+    Returns (new_tool_or_None, changed). A None new_tool means the tool was
+    stripped (proprietary type with no CERIT equivalent). The bool indicates
+    whether the returned tool differs from the input.
+    """
+    tool_type = tool.get("type", "")
+    if tool_type in _ANTHROPIC_TYPE_MAP:
+        override = _ANTHROPIC_TYPE_MAP[tool_type]
+        if override is None:
+            sys.stderr.write(
+                f"[proxy] stripped proprietary tool {tool_type!r} "
+                f"({tool.get('name', '?')!r})\n"
+            )
+            return None, True
+        new_name, new_desc, new_schema = override
+        t = {k: v for k, v in tool.items() if k != "type"}
+        t["name"] = new_name
+        t.setdefault("description", new_desc)
+        t["input_schema"] = new_schema
+        sys.stderr.write(f"[proxy] converted {tool_type!r} -> {new_name!r}\n")
+        return t, True
+    if "input_schema" not in tool:
+        t = dict(tool)
+        t["input_schema"] = _DEFAULT_INPUT_SCHEMA
+        sys.stderr.write(f"[proxy] patched missing input_schema on {t.get('name', '?')!r}\n")
+        return t, True
+    return tool, False
+
+
 def sanitize_tool_definitions(body_obj: dict) -> dict:
     tools = body_obj.get("tools")
     if not tools:
@@ -238,34 +270,14 @@ def sanitize_tool_definitions(body_obj: dict) -> dict:
         if not isinstance(tool, dict):
             patched.append(tool)
             continue
-        tool_type = tool.get("type", "")
-        if tool_type in _ANTHROPIC_TYPE_MAP:
-            override = _ANTHROPIC_TYPE_MAP[tool_type]
-            if override is None:
-                stripped_names.add(tool.get("name", ""))
-                sys.stderr.write(
-                    f"[proxy] stripped proprietary tool {tool_type!r} "
-                    f"({tool.get('name', '?')!r})\n"
-                )
-                changed = True
-                continue
-            new_name, new_desc, new_schema = override
-            t = {k: v for k, v in tool.items() if k != "type"}
-            t["name"] = new_name
-            t.setdefault("description", new_desc)
-            t["input_schema"] = new_schema
-            sys.stderr.write(f"[proxy] converted {tool_type!r} -> {new_name!r}\n")
-            patched.append(t)
+        new_tool, tool_changed = _patch_single_tool(tool)
+        if new_tool is None:
+            stripped_names.add(tool.get("name", ""))
             changed = True
             continue
-        if "input_schema" not in tool:
-            t = dict(tool)
-            t["input_schema"] = _DEFAULT_INPUT_SCHEMA
-            sys.stderr.write(f"[proxy] patched missing input_schema on {t.get('name', '?')!r}\n")
-            patched.append(t)
+        patched.append(new_tool)
+        if tool_changed:
             changed = True
-        else:
-            patched.append(tool)
     if not changed:
         return body_obj
     body_obj = dict(body_obj)
@@ -401,6 +413,12 @@ class Handler(BaseHTTPRequestHandler):
             return None, (e.code, data, ct)
 
     def _proxy(self, method: str):
+        global REQUEST_COUNTER
+        with REQUEST_LOCK:
+            REQUEST_COUNTER += 1
+            req_num = REQUEST_COUNTER
+        sys.stderr.write(f"[proxy] req #{req_num} {method} {self.path}\n")
+
         body = b""
         clen = int(self.headers.get("Content-Length", "0") or "0")
         if clen:
@@ -527,13 +545,30 @@ class Handler(BaseHTTPRequestHandler):
                     send_obj["chat_template_kwargs"] = {"enable_thinking": False}
                     sys.stderr.write("[proxy] GLM: thinking disabled\n")
 
-            resp, err = self._send_request(method, send_obj, dict(headers))
-            if resp is not None:
-                self._relay_success(resp)
-                return
+            for attempt in range(1, RATE_LIMIT_RETRIES + 2):  # initial + N retries
+                resp, err = self._send_request(method, send_obj, dict(headers))
+                if resp is not None:
+                    self._relay_success(resp)
+                    return
 
-            code, data, ct = err
-            last_err = err
+                code, data, ct = err
+                last_err = err
+                if code == RATE_LIMIT_STATUS and attempt <= RATE_LIMIT_RETRIES:
+                    sys.stderr.write(
+                        f"[proxy] {target!r} rate-limited (429); "
+                        f"retry {attempt}/{RATE_LIMIT_RETRIES} in {RATE_LIMIT_WAIT_S}s\n"
+                    )
+                    time.sleep(RATE_LIMIT_WAIT_S)
+                    continue
+                break
+
+            code, data, ct = last_err
+            if code == RATE_LIMIT_STATUS and idx + 1 < len(attempts):
+                sys.stderr.write(
+                    f"[proxy] {target!r} still rate-limited after {RATE_LIMIT_RETRIES} "
+                    f"retries — falling through to next model\n"
+                )
+                continue
             if code == 400 and is_overflow(data) and idx + 1 < len(attempts):
                 continue
             self._relay_error(code, data, ct)
@@ -552,41 +587,47 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         is_sse = "text/event-stream" in (resp.headers.get("Content-Type") or "")
         if is_sse:
-            self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
-            try:
-                # Buffer trailing incomplete UTF-8 bytes across chunk boundaries.
-                # Fixed-size reads can split multi-byte chars (e.g. emoji = 3 bytes);
-                # accumulate the remainder and prepend it to the next chunk.
-                leftover = b""
-                while True:
-                    raw = resp.read(1024)
-                    if not raw:
-                        break
-                    chunk = leftover + raw
-                    # Find last valid UTF-8 boundary by decoding with error='ignore'
-                    # and encoding back — difference is the incomplete tail.
-                    decoded = chunk.decode("utf-8", errors="ignore")
-                    safe = decoded.encode("utf-8")
-                    leftover = chunk[len(safe):]
-                    if not safe:
-                        continue
-                    self.wfile.write(("%X\r\n" % len(safe)).encode())
-                    self.wfile.write(safe)
-                    self.wfile.write(b"\r\n")
-                    self.wfile.flush()
-                if leftover:  # flush any remaining bytes as-is
-                    self.wfile.write(("%X\r\n" % len(leftover)).encode())
-                    self.wfile.write(leftover)
-                    self.wfile.write(b"\r\n")
-                self.wfile.write(b"0\r\n\r\n")
-            except Exception as e:
-                sys.stderr.write(f"[proxy] stream error: {e}\n")
+            self._relay_sse(resp)
         else:
-            data = resp.read()
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            self._relay_non_sse(resp)
+
+    def _relay_sse(self, resp):
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        try:
+            # Buffer trailing incomplete UTF-8 bytes across chunk boundaries.
+            # Fixed-size reads can split multi-byte chars (e.g. emoji = 3 bytes);
+            # accumulate the remainder and prepend it to the next chunk.
+            leftover = b""
+            while True:
+                raw = resp.read(1024)
+                if not raw:
+                    break
+                chunk = leftover + raw
+                # Find last valid UTF-8 boundary by decoding with error='ignore'
+                # and encoding back — difference is the incomplete tail.
+                decoded = chunk.decode("utf-8", errors="ignore")
+                safe = decoded.encode("utf-8")
+                leftover = chunk[len(safe):]
+                if not safe:
+                    continue
+                self.wfile.write(("%X\r\n" % len(safe)).encode())
+                self.wfile.write(safe)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+            if leftover:  # flush any remaining bytes as-is
+                self.wfile.write(("%X\r\n" % len(leftover)).encode())
+                self.wfile.write(leftover)
+                self.wfile.write(b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        except Exception as e:
+            sys.stderr.write(f"[proxy] stream error: {e}\n")
+
+    def _relay_non_sse(self, resp):
+        data = resp.read()
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _relay_error(self, code: int, data: bytes, ct: str):
         self.send_response(code)
@@ -615,4 +656,5 @@ if __name__ == "__main__":
         sys.stderr.write(f"[proxy] override: {src} -> {dst}\n")
     for src, chain in FALLBACK_CHAIN.items():
         sys.stderr.write(f"[proxy] fallback: {src} -> {' -> '.join(chain)}\n")
+    sys.stderr.write(f"[proxy] requests handled so far: {REQUEST_COUNTER}\n")
     srv.serve_forever()

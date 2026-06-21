@@ -1286,6 +1286,78 @@ def judge_output(prompt: str, output: str, token: str) -> dict | None:
         return {"score": None, "rationale": f"judge_error: {e}", "issues": []}
 
 
+# ── Artifact extraction ───────────────────────────────────────────────────────
+
+def _extract_artifacts(raw_stdout: str) -> str:
+    """
+    Scan stream-json events for Write/Edit/Bash tool calls and return a
+    compact block of what was actually written/executed.  Appended to
+    *_output.txt so the quality judge sees file content even when the
+    model didn't echo it in its text output.
+    """
+    artifacts: list[str] = []
+    try:
+        events = []
+        for line in raw_stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                continue
+
+        tool_results: dict[str, str] = {}
+        for e in events:
+            if e.get("type") != "user":
+                continue
+            for block in (e.get("message", {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                uid = block.get("tool_use_id", "")
+                cnt = block.get("content", "")
+                if isinstance(cnt, list):
+                    cnt = "\n".join(b.get("text", "") for b in cnt if isinstance(b, dict))
+                tool_results[uid] = str(cnt)
+
+        for e in events:
+            if e.get("type") != "assistant":
+                continue
+            for block in (e.get("message", {}).get("content") or []):
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name", "")
+                inp = block.get("input") or {}
+                uid = block.get("id", "")
+
+                if name == "Write":
+                    path = inp.get("file_path", "")
+                    content = inp.get("content", "")
+                    if path and content:
+                        artifacts.append(f"[ARTIFACT written] {path}:\n```\n{content[:2000]}\n```")
+
+                elif name == "Edit":
+                    path = inp.get("file_path", "")
+                    old = inp.get("old_string", "")
+                    new = inp.get("new_string", "")
+                    if path:
+                        artifacts.append(
+                            f"[ARTIFACT edited] {path}:\n"
+                            f"  old: {repr(old[:120])}\n"
+                            f"  new: {repr(new[:120])}"
+                        )
+
+                elif name == "Bash":
+                    cmd = inp.get("command", "")
+                    result = tool_results.get(uid, "")
+                    if result and ("/tmp/" in cmd or "port" in cmd.lower()
+                                   or "python" in cmd.lower() or "bash " in cmd.lower()):
+                        artifacts.append(f"[BASH] $ {cmd[:200]}\n{result[:500]}")
+    except Exception:
+        pass
+    return "\n\n".join(artifacts)
+
+
 # ── Stream-json parsing ────────────────────────────────────────────────────────
 
 def parse_stream_json(raw: str) -> dict:
@@ -1523,8 +1595,12 @@ def run_test(test: dict, env: dict, results_dir: Path, token: str,
     proxy_events = parse_proxy_log_delta(proxy_offset)
 
     text_output = stream_metrics.pop("text_output", "")
+    artifacts = _extract_artifacts(raw_stdout)
+    artifact_section = ("\n\n---\n" + artifacts) if artifacts else ""
     (results_dir / f"{tid}_output.txt").write_text(
-        text_output + ("\n\n[STDERR]\n" + stderr if stderr else "")
+        text_output
+        + artifact_section
+        + ("\n\n[STDERR]\n" + stderr if stderr else "")
     )
 
     pattern = test.get("success_re", ".")

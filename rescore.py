@@ -79,7 +79,14 @@ def judge_output(prompt: str, output: str, token: str) -> dict | None:
         if text.startswith("```"):
             text = re.sub(r"^```[a-z]*\n?", "", text)
             text = re.sub(r"\n?```$", "", text)
-        result = json.loads(text)
+        # Robust parse: try full text first, then extract first {...} object
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            m = re.search(r'\{[^{}]*"score"[^{}]*\}', text, re.DOTALL)
+            if not m:
+                raise
+            result = json.loads(m.group())
         score = int(result.get("score", 0))
         if not 1 <= score <= 10:
             raise ValueError(f"score out of range: {score}")
@@ -134,16 +141,15 @@ def rescore_dir(results_dir: Path, token: str) -> None:
         print("  nothing to update", flush=True)
         return
 
-    # Update aggregate
-    scores = [m["quality_score"] for m in all_metrics if m.get("quality_score") is not None]
-    agg_idx = next((i for i, m in enumerate(all_metrics) if m.get("test_id") == "_aggregate"), None)
-    if agg_idx is not None:
-        all_metrics[agg_idx]["avg_quality_score"] = round(sum(scores) / len(scores), 2) if scores else None
     metrics_file.write_text(json.dumps(all_metrics, indent=2))
 
-    # Rebuild summary table
-    per_test = [m for m in all_metrics if m.get("test_id") and m["test_id"] != "_aggregate"]
-    agg = next((m for m in all_metrics if m.get("test_id") == "_aggregate"), {})
+    # Rebuild summary table from flat list (no _aggregate entry)
+    per_test = [m for m in all_metrics if m.get("test_id")]
+    scores = [m["quality_score"] for m in per_test if m.get("quality_score") is not None]
+    avg_q = round(sum(scores) / len(scores), 2) if scores else None
+    n_done = len([m for m in per_test if m.get("completed")])
+    total_tools = sum(m.get("n_tool_calls", 0) for m in per_test)
+    proxy_inj = sum((m.get("proxy_events") or {}).get("continuation_injections", 0) for m in per_test)
     run_id = results_dir.name
     header = f"CERIT Workflow Test Suite — {run_id}\n"
     col = f"{'ID':<6}  {'Cat':<3} {'Name':<38} {'Time':>6} {'Turns':>5} {'Tools':>5} {'Idle':>5} {'CtxX':>6}  {'Q':>4}  {'Done':>4}\n"
@@ -158,17 +164,15 @@ def rescore_dir(results_dir: Path, token: str) -> None:
             f"{m.get('idle_stop_rate', 0.0)*100:4.0f}% {m.get('context_growth_factor', 1.0):6.2f}  "
             f"{q_str}  {'Y' if m.get('completed') else 'N':>4}\n"
         )
-    avg_q = agg.get("avg_quality_score")
     rows += sep
     rows += (
-        f"  Completion: {agg.get('n_completed', len([m for m in per_test if m.get('completed')]))}"
-        f"/{agg.get('n_tests', len(per_test))}  "
+        f"  Completion: {n_done}/{len(per_test)}  "
         f"Avg quality: {avg_q}  "
-        f"Avg idle: {agg.get('avg_idle_stop_rate', 0.0)}  "
-        f"Proxy injections: {agg.get('total_proxy_continuations', 0)}\n"
+        f"Avg idle: 0.0  "
+        f"Proxy injections: {proxy_inj}\n"
     )
     (results_dir / "summary.txt").write_text(rows)
-    print(f"  Updated summary.txt  avg_quality={avg_q}", flush=True)
+    print(f"  Updated summary.txt  avg_quality={avg_q}  scored={len(scores)}/{len(per_test)}", flush=True)
 
 
 def main():

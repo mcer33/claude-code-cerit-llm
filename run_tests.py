@@ -20,7 +20,7 @@ Results written to ~/dev/cerit-tests/results/run_<ISO>_<model>/
 Usage:
     python3 run_tests.py [--model rich|medium|long|deep|glm]
                          [--tests T1,T3,A01]
-                         [--suite base|ext|all]
+                         [--suite base|ext|all|comp]
                          [--category A,B,C]
                          [--parallel 1|2]
                          [--no-judge]
@@ -1198,6 +1198,500 @@ TESTS_COMP = [
         "min_tools": 2,
         "success_re": r"(CERIT_CONTINUATION|cerit_prompts|import|used in|function|proxy)",
         "timeout": 120,
+    },
+
+    # ── Extended N-suite (N11–N40) ──────────────────────────────────────────
+    # Wider coverage: A read/analyze, B code-gen, C edit, D bash,
+    # E search/audit, F multi-tool, G debug/reason, H explain, I verify.
+
+    # ── Category A: Read / analyze ──────────────────────────────────────────
+    {
+        "id": "N11", "suite": "comp", "category": "A",
+        "name": "Proxy module-level constants",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. List every module-level constant "
+            "(ALL_CAPS name assigned at top level, outside any function). "
+            "For each: name, value (or Python type if it's a complex object), "
+            "and one-sentence purpose. Include at minimum the port, token file "
+            "path, API endpoint, and any numeric limits."
+        ),
+        "min_tools": 1,
+        "success_re": r"(9999|token|CERIT_API|PORT|TURN|LOOP)",
+        "timeout": 90,
+    },
+    {
+        "id": "N12", "suite": "comp", "category": "A",
+        "name": "HTTP error code handling",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. Find every HTTP status code (4xx/5xx) "
+            "the proxy handles specially. For each: status code, the function or "
+            "code block that handles it, and what the proxy does (retry, fallback, "
+            "error response, etc.)."
+        ),
+        "min_tools": 1,
+        "success_re": r"(400|429|503|status|fallback|retry)",
+        "timeout": 90,
+    },
+    {
+        "id": "N13", "suite": "comp", "category": "A",
+        "name": "Thread-safety analysis",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. The proxy uses ThreadingHTTPServer so "
+            "multiple requests run concurrently. List every module-level mutable "
+            "variable (not constants, not per-request locals) that is read or "
+            "written by request-handler code. For each: is it protected by a lock? "
+            "State SAFE or RACE RISK with one-line justification."
+        ),
+        "min_tools": 1,
+        "success_re": r"(thread|lock|race|mutable|global|SAFE|RISK)",
+        "timeout": 120,
+    },
+    {
+        "id": "N20", "suite": "comp", "category": "A",
+        "name": "5 longest functions in proxy",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. Find the 5 longest functions by line count "
+            "(from 'def ...' line to the line before the next top-level def/class or EOF). "
+            "Report: function name, start line, line count."
+        ),
+        "min_tools": 1,
+        "success_re": r"(def |line \d+|\d+ lines?)",
+        "timeout": 90,
+    },
+    {
+        "id": "N32", "suite": "comp", "category": "A",
+        "name": "Empty token file behavior",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. If ~/.config/cerit/token exists but is "
+            "empty (zero bytes), what happens: (a) at proxy startup, (b) when the "
+            "first request arrives? Quote the relevant lines and state whether it "
+            "crashes, silently fails, or returns an error response."
+        ),
+        "min_tools": 1,
+        "success_re": r"(token|empty|startup|crash|error|request)",
+        "timeout": 90,
+    },
+    {
+        "id": "N39", "suite": "comp", "category": "A",
+        "name": "All functions across all .py files",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read every .py file in the current directory. "
+            "List every function definition (def ...) — file, function name, "
+            "line number, and one-sentence purpose inferred from the docstring or code. "
+            "Sort by file then by line number."
+        ),
+        "min_tools": 3,
+        "success_re": r"(def |line \d+|\|)",
+        "timeout": 180,
+    },
+
+    # ── Category B: Code generation ─────────────────────────────────────────
+    {
+        "id": "N14", "suite": "comp", "category": "B",
+        "name": "Write token validator script",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Write /tmp/comp_token_check.py that reads ~/.config/cerit/token, "
+            "checks the token is non-empty and at least 20 chars, and prints "
+            "'TOKEN OK (<N> chars)' or 'TOKEN MISSING' / 'TOKEN TOO SHORT (<N> chars)'. "
+            "Then run it with python3 /tmp/comp_token_check.py and show the output."
+        ),
+        "min_tools": 2,
+        "success_re": r"(TOKEN OK|TOKEN MISSING|TOKEN TOO SHORT|comp_token_check)",
+        "timeout": 90,
+    },
+    {
+        "id": "N15", "suite": "comp", "category": "B",
+        "name": "Write metrics reader script",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Write /tmp/comp_metrics_reader.py: accepts a path to a metrics.json "
+            "(list of per-test dicts) as sys.argv[1] and prints: total tests, "
+            "completed count, completion %, and avg quality_score (skip None values; "
+            "print 'N/A' if none). "
+            "Handle the file-not-found case with a clear error message. "
+            "Write the file and print its full content."
+        ),
+        "min_tools": 2,
+        "success_re": r"(sys\.argv|quality_score|completion|json\.load|comp_metrics_reader)",
+        "timeout": 90,
+    },
+    {
+        "id": "N25", "suite": "comp", "category": "B",
+        "name": "Write unit tests for compute_stats",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Write /tmp/comp_test_stats.py: a Python unittest file testing "
+            "compute_stats(times: list[float]) -> dict with keys mean, median, "
+            "std_dev, min, max. Include 4 test cases: "
+            "(1) [1.0, 2.0, 3.0, 4.0, 5.0] — check mean==3.0 and min==1.0, "
+            "(2) single-element list [7.0] — mean==median==7.0, "
+            "(3) all-same [2.0, 2.0, 2.0] — std_dev==0.0, "
+            "(4) empty list — expect ValueError or KeyError. "
+            "Print the file contents."
+        ),
+        "min_tools": 2,
+        "success_re": r"(unittest|TestCase|compute_stats|assertEqual|assertRaises)",
+        "timeout": 90,
+    },
+    {
+        "id": "N33", "suite": "comp", "category": "B",
+        "name": "Write install verifier",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read install.sh to understand what files it installs and where. "
+            "Then write /tmp/comp_verify_install.sh that checks each installed "
+            "destination path and prints 'OK: <path>' or 'MISSING: <path>'. "
+            "Run it and show the output."
+        ),
+        "min_tools": 3,
+        "success_re": r"(OK:|MISSING:|install|comp_verify_install)",
+        "timeout": 120,
+    },
+
+    # ── Category C: Edit / refactor ─────────────────────────────────────────
+    {
+        "id": "N16", "suite": "comp", "category": "C",
+        "name": "Edit JUDGE_MODEL + revert",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "In rescore.py, find the JUDGE_MODEL constant. Read its current value. "
+            "Change it to 'qwen3-coder'. Read that line back to confirm. "
+            "Then revert it to the original value and read the line again to confirm the revert."
+        ),
+        "min_tools": 4,
+        "success_re": r"(JUDGE_MODEL|qwen3-coder|revert|original|confirm)",
+        "timeout": 120,
+    },
+    {
+        "id": "N29", "suite": "comp", "category": "C",
+        "name": "Add inline comment + revert",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "In cerit-rewrite-proxy.py, find the line that defines the proxy's "
+            "listening port (9999). Add an inline comment '# override with PROXY_PORT env var' "
+            "to the end of that exact line. Read the line back to confirm the comment is present. "
+            "Then revert the file to its original state and confirm."
+        ),
+        "min_tools": 3,
+        "success_re": r"(9999|comment|revert|confirm|PROXY_PORT|override)",
+        "timeout": 120,
+    },
+    {
+        "id": "N38", "suite": "comp", "category": "C",
+        "name": "Add verbose param to rescore_dir + revert",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "In rescore.py, modify the rescore_dir() function signature to add "
+            "a verbose: bool = True parameter after the existing parameters. "
+            "Also add one line inside the function: "
+            "'    if verbose: print(f\"[verbose] {tid}\")' "
+            "just before the line that calls judge_output(). "
+            "Read back those two changed lines to confirm. Then revert both changes."
+        ),
+        "min_tools": 4,
+        "success_re": r"(verbose|rescore_dir|revert|parameter|confirm)",
+        "timeout": 150,
+    },
+
+    # ── Category D: Bash / shell ────────────────────────────────────────────
+    {
+        "id": "N17", "suite": "comp", "category": "D",
+        "name": "File inventory: size + date",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "For every file in the current directory (not recursive), show: "
+            "filename, size in bytes, last-modified timestamp (YYYY-MM-DD HH:MM). "
+            "Sort by modification time, newest first."
+        ),
+        "min_tools": 1,
+        "success_re": r"(\d{4}-\d{2}-\d{2}|\d+ bytes?|\.py|\.sh)",
+        "timeout": 60,
+    },
+    {
+        "id": "N18", "suite": "comp", "category": "D",
+        "name": "Code vs comment vs blank line counts",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "For each .py file in the current directory count: "
+            "(a) total lines, (b) blank lines, (c) comment-only lines (stripped line starts with #), "
+            "(d) code lines = total - blank - comment. "
+            "Show as a table: filename | total | blank | comment | code."
+        ),
+        "min_tools": 1,
+        "success_re": r"(total|blank|comment|code|\||\d{2,})",
+        "timeout": 90,
+    },
+    {
+        "id": "N19", "suite": "comp", "category": "D",
+        "name": "Write + run CERIT API check",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Write /tmp/comp_api_check.sh: a bash script that curls "
+            "https://llm.ai.e-infra.cz/v1/models with a 5-second timeout, "
+            "and prints 'CERIT API UP (HTTP <code>)' for 2xx or 'CERIT API DOWN: <code>' otherwise. "
+            "Make it executable and run it. Show the output."
+        ),
+        "min_tools": 2,
+        "success_re": r"(CERIT API|curl|comp_api_check|UP|DOWN|HTTP)",
+        "timeout": 90,
+    },
+    {
+        "id": "N28", "suite": "comp", "category": "D",
+        "name": "Git log: last 5 commits",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Run git log to show the last 5 commits in this repository. "
+            "For each: short hash, date (YYYY-MM-DD), and first line of the commit message. "
+            "Then run git diff --stat on the most recent commit to show which files changed."
+        ),
+        "min_tools": 1,
+        "success_re": r"([0-9a-f]{6,}|\d{4}-\d{2}-\d{2}|commit|changed)",
+        "timeout": 60,
+    },
+
+    # ── Category E: Search / audit ──────────────────────────────────────────
+    {
+        "id": "N23", "suite": "comp", "category": "E",
+        "name": "Hardcoded timeout audit",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Search all .py files for hardcoded numeric timeout/sleep values "
+            "(integers or floats in: timeout=..., time.sleep(...), urlopen(...timeout=...)). "
+            "For each match: file, line number, value in seconds, what is being timed out."
+        ),
+        "min_tools": 1,
+        "success_re": r"(timeout|sleep|seconds?|line \d+|\d+\.?\d*)",
+        "timeout": 90,
+    },
+    {
+        "id": "N24", "suite": "comp", "category": "E",
+        "name": "Continuation injection sites",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py. Find every location where the proxy "
+            "injects text into a system prompt or message list (continuation, "
+            "synthesis nudge, loop-break, TASK_COMPLETE instruction, etc.). "
+            "For each: line range, what text is injected, and the condition that triggers it."
+        ),
+        "min_tools": 1,
+        "success_re": r"(inject|continuation|system|nudge|TASK_COMPLETE|loop)",
+        "timeout": 90,
+    },
+    {
+        "id": "N35", "suite": "comp", "category": "E",
+        "name": "Retry logic audit",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Search all .py files for retry loops (for/while with retry, attempt, "
+            "backoff, or sleep inside). For each: file, approximate line range, "
+            "what is being retried, max attempts, and backoff strategy (fixed/exponential/none)."
+        ),
+        "min_tools": 1,
+        "success_re": r"(retry|attempt|backoff|sleep|loop|\d+ (times|attempts))",
+        "timeout": 90,
+    },
+    {
+        "id": "N36", "suite": "comp", "category": "E",
+        "name": "Test suite category breakdown",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read run_tests.py. Find ALL_TESTS. For each unique 'category' field value, "
+            "count how many tests belong to it and give one example test name. "
+            "Show as a table: category | count | example. "
+            "Also report which category has the longest average timeout."
+        ),
+        "min_tools": 1,
+        "success_re": r"(category|count|ALL_TESTS|timeout|average|\|)",
+        "timeout": 90,
+    },
+
+    # ── Category F: Multi-tool ──────────────────────────────────────────────
+    {
+        "id": "N21", "suite": "comp", "category": "F",
+        "name": "Trace: CLI args to test output",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read run_tests.py. Trace the execution path from script entry (if __name__) "
+            "to when one test's result dict is written to metrics.json. "
+            "List as numbered steps: e.g. '1. main() parses args via argparse ...'. "
+            "Must cover: arg parsing, test pool selection, env construction, "
+            "subprocess launch, output capture, metrics save."
+        ),
+        "min_tools": 1,
+        "success_re": r"(main|argparse|build_env|subprocess|metrics|run_test)",
+        "timeout": 120,
+    },
+    {
+        "id": "N22", "suite": "comp", "category": "F",
+        "name": "MODEL_PRESETS deep read",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read run_tests.py. Find MODEL_PRESETS. For each preset entry: "
+            "name, ANTHROPIC_MODEL value, whether it uses proxy (has ANTHROPIC_BASE_URL), "
+            "and CLAUDE_CODE_MAX_CONTEXT_TOKENS. "
+            "Then count: proxy presets vs native presets. "
+            "Show as a table."
+        ),
+        "min_tools": 1,
+        "success_re": r"(MODEL_PRESETS|proxy|native|ANTHROPIC_MODEL|context|\|)",
+        "timeout": 90,
+    },
+    {
+        "id": "N27", "suite": "comp", "category": "F",
+        "name": "cerit_prompts usage map",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit_prompts.py fully. Then read cerit-rewrite-proxy.py. "
+            "For each name exported from cerit_prompts.py: state whether the proxy "
+            "imports it, and if so, in which function(s) it is used and for what purpose. "
+            "Format: constant_name | imported | used_in_function | purpose."
+        ),
+        "min_tools": 2,
+        "success_re": r"(cerit_prompts|import|used|purpose|\|)",
+        "timeout": 120,
+    },
+    {
+        "id": "N30", "suite": "comp", "category": "F",
+        "name": "install.sh file map + existence check",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read install.sh. List every source file it copies/installs and its "
+            "destination path. Then check whether each source file exists in the "
+            "current directory and report: source | destination | source_exists (Y/N)."
+        ),
+        "min_tools": 2,
+        "success_re": r"(install|source|destination|Y|N|exists|\|)",
+        "timeout": 90,
+    },
+    {
+        "id": "N34", "suite": "comp", "category": "F",
+        "name": "Proxy overhead calculation",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read run_tests.py. Using the N-suite benchmark data embedded as comments "
+            "near TESTS_COMP (GLM: 122.9s total, 28 proxy injections; "
+            "native Sonnet: 149.4s total, 0 injections, both 10/10 tasks): "
+            "(1) avg seconds per task for each model, "
+            "(2) proxy injection overhead per injection = (GLM_total - native_total) / 28, "
+            "(3) net GLM time without injections vs native — which is faster? "
+            "Show your arithmetic."
+        ),
+        "min_tools": 1,
+        "success_re": r"(\d+\.\d+|faster|slower|overhead|injection|seconds?)",
+        "timeout": 90,
+    },
+    {
+        "id": "N40", "suite": "comp", "category": "F",
+        "name": "Project one-pager",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read the module docstrings of cerit-rewrite-proxy.py and run_tests.py "
+            "plus any README. Write a 300-400 word technical summary of this project: "
+            "what problem it solves, how the proxy works at a high level, "
+            "and how the benchmark measures model quality. "
+            "Include at least two concrete numbers from the code or comments."
+        ),
+        "min_tools": 2,
+        "success_re": r"(proxy|benchmark|model|CERIT|tool|free|\d+)",
+        "timeout": 150,
+    },
+
+    # ── Category G: Debug / reason ──────────────────────────────────────────
+    {
+        "id": "N31", "suite": "comp", "category": "G",
+        "name": "Trace: web_search + computer tool in one request",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py, specifically the tool sanitizer. "
+            "If a single request contains both a 'web_search_20250305' tool and a "
+            "'computer_20241022' tool, what exactly happens to each one? "
+            "Trace the sanitize_tool_definitions() function step by step for both tools "
+            "and state the final tools list sent to the upstream API."
+        ),
+        "min_tools": 1,
+        "success_re": r"(web_search|computer|sanitiz|strip|convert|upstream)",
+        "timeout": 120,
+    },
+    {
+        "id": "N37", "suite": "comp", "category": "G",
+        "name": "Diagnose: why idle stops happen",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit_idle_stop_reproducer.py and cerit-rewrite-proxy.py. "
+            "Explain in 4 bullet points why an LLM in a Claude Code session might "
+            "produce an idle stop (text output with no tool call). "
+            "Then explain how the proxy's continuation injection tries to prevent this, "
+            "citing the specific code that does so."
+        ),
+        "min_tools": 2,
+        "success_re": r"(idle|stop|continuation|tool_choice|inject|prevent)",
+        "timeout": 120,
+    },
+
+    # ── Category H: Explain / synthesize ───────────────────────────────────
+    {
+        "id": "N26", "suite": "comp", "category": "H",
+        "name": "Plain-English proxy explainer",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read cerit-rewrite-proxy.py (at minimum the module docstring and the "
+            "do_POST handler). Write 3 paragraphs in plain English explaining what the "
+            "proxy does and why it exists, targeting a developer who has never heard of "
+            "CERIT or Claude Code. No jargon without a brief definition."
+        ),
+        "min_tools": 1,
+        "success_re": r"(proxy|Claude|request|model|free|CERIT)",
+        "timeout": 90,
+    },
+    {
+        "id": "N33b", "suite": "comp", "category": "H",
+        "name": "Summarize README",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Read README.md. Summarize it in exactly 5 bullet points, one per major section. "
+            "Each bullet: section title + one sentence of content. "
+            "If there is no README.md, state that clearly and instead describe the project "
+            "from the .py file docstrings."
+        ),
+        "min_tools": 1,
+        "success_re": r"(README|proxy|CERIT|Claude|install|\-|\•)",
+        "timeout": 60,
+    },
+
+    # ── Category I: Verify / execute ────────────────────────────────────────
+    {
+        "id": "N41", "suite": "comp", "category": "I",
+        "name": "Verify cerit_prompts importable",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Run: python3 -c \"import cerit_prompts; "
+            "names = [x for x in dir(cerit_prompts) if not x.startswith('_')]; "
+            "print('\\n'.join(names))\" "
+            "List each exported name and classify it as: string constant, dict, list, or other."
+        ),
+        "min_tools": 1,
+        "success_re": r"(cerit_prompts|string|constant|CERIT|JUDGE|TASK)",
+        "timeout": 60,
+    },
+    {
+        "id": "N42", "suite": "comp", "category": "I",
+        "name": "Verify rescore.py syntax",
+        "cwd": COMP_DIR,
+        "prompt": (
+            "Run: python3 -m py_compile rescore.py && echo 'SYNTAX OK' || echo 'SYNTAX ERROR'. "
+            "Then run: python3 -m py_compile run_tests.py && echo 'SYNTAX OK' || echo 'SYNTAX ERROR'. "
+            "Report the result for each file."
+        ),
+        "min_tools": 1,
+        "success_re": r"(SYNTAX OK|SYNTAX ERROR|py_compile)",
+        "timeout": 60,
     },
 ]
 

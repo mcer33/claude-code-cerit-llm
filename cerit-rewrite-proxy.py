@@ -436,6 +436,18 @@ def _patch_single_tool(tool: dict) -> tuple[dict | None, bool]:
 def sanitize_tool_definitions(body_obj: dict) -> dict:
     tools = body_obj.get("tools")
     if not tools:
+        # Clear dangling tool_choice when there are no tools to route to.
+        # CC's WebSearch summarizer sends tools:[] + tool_choice:specific
+        # which CERIT vLLM rejects (400: Tools cannot be empty if tool_choice
+        # is set to a specific tool).
+        tc = body_obj.get("tool_choice")
+        if tc and tc != {"type": "none"}:
+            body_obj = dict(body_obj)
+            body_obj.pop("tool_choice", None)
+            sys.stderr.write(
+                "[proxy] cleared tool_choice (tools array is empty): "
+                + repr(tc) + "\n"
+            )
         return body_obj
     patched: list = []
     stripped_names: set = set()

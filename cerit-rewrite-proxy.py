@@ -11,8 +11,21 @@ Interventions (in order of application):
    idle text turns.
 4. Model routing: rewrite claude-* model names to best CERIT model for the task.
    Gemma4 is EXCLUDED from tool-using sessions (unreliable tool-call output).
-5. Context-overflow fallback: on 400 "exceeds max length", retry with next
+5. GLM thinking disable: inject chat_template_kwargs enable_thinking=false for
+   glm-5.2 targets in tool-using sessions (thinking ON by default = slower).
+6. Context-overflow fallback: on 400 "exceeds max length", retry with next
    model in FALLBACK_CHAIN.
+7. HTTP 429 retry: on rate-limit response, wait RATE_LIMIT_WAIT_S and retry
+   up to RATE_LIMIT_RETRIES times before failing.
+8. Web-search injection (two complementary sub-fixes):
+   8a. Short-circuit: if the request carries exactly one tool (web_search or
+       WebSearch), CC is executing a secondary search call that CERIT cannot
+       service.  The proxy intercepts it, queries DuckDuckGo via the `ddgs`
+       package, and returns a synthetic response — CERIT never sees this call.
+   8b. Result injection: if a prior tool_result for web_search / WebSearch is
+       empty or shorter than _WEB_SEARCH_EMPTY_THRESHOLD chars (CC returned an
+       error), the proxy replaces the content with fresh DDG results before
+       forwarding so the CERIT model sees real data.
 
 CERIT server config (confirmed by Lukáš Hejtmánek, 2026-06-19):
 - kimi         → admin-recommended alias → kimi-k2.7 (sglang, --tool-call-parser kimi_k2, tools ✓,
@@ -206,13 +219,34 @@ def classify_task(body: dict) -> str:
 
 
 
-# ── Proxy-side web-search injection ─────────────────────────────────────────
-# CC only services web_search tool_use when the tool definition carries the
-# proprietary type web_search_20250305. After the proxy converts that to a
-# plain function tool, CC cannot service the call and returns an empty or
-# error tool_result. inject_web_search_results() detects this on the NEXT
-# request, fetches real DuckDuckGo results, and fills in the content before
-# forwarding to CERIT so the model sees real search results.
+# ── Proxy-side web-search injection (intervention #7) ────────────────────────
+#
+# Background — two paths that both fail in CERIT sessions:
+#
+#   PATH A (typed tool): CC registers web_search_20250305 → proxy converts to
+#   plain "web_search" function tool → CERIT model calls it → CC can no longer
+#   service the result (expects typed-search response format) → empty/error
+#   tool_result on next request.
+#
+#   PATH B (function tool): CC registers "WebSearch" function tool → CERIT model
+#   calls WebSearch → CC's WebSearch executor makes a secondary API call using
+#   web_search_20250305 → that call hits proxy → proxy converts → CERIT model
+#   tries to handle as ordinary chat → returns text or calls web_search again →
+#   CC cannot parse as search results → error tool_result.
+#
+# Two complementary fixes:
+#
+#   FIX 1 — is_web_search_execution() short-circuit (applied BEFORE routing):
+#     Detects PATH B's secondary search-execution request by the fact that it
+#     carries exactly ONE tool (web_search or WebSearch).  The proxy intercepts
+#     it, queries DuckDuckGo directly, and returns a synthetic API response
+#     so CC never has to decode CERIT's mangled reply.
+#
+#   FIX 2 — inject_web_search_results() (applied on every inbound request):
+#     Scans the message history for tool_results whose content is empty or
+#     shorter than _WEB_SEARCH_EMPTY_THRESHOLD chars (PATH A's empty result or
+#     a short error string from either path).  If found, fetches DDG results and
+#     replaces the content before forwarding to CERIT.
 
 _WEB_SEARCH_EMPTY_THRESHOLD = 50  # chars; result shorter than this → treat as empty
 
@@ -222,15 +256,15 @@ def _ddg_search(query: str, max_results: int = 6) -> str:
         try:
             results = list(_DDGS().text(query, max_results=max_results))
             if results:
-                lines = [f"[Web search results for: {query}]"]
+                lines = ["[Web search results for: " + query + "]"]
                 for i, r in enumerate(results, 1):
-                    lines.append(f"{i}. {r.get('title', '')}")
-                    lines.append(f"   {r.get('href', '')}")
-                    lines.append(f"   {r.get('body', '')[:200]}")
-                sys.stderr.write(f"[proxy] web_search: ddgs returned {len(results)} results\n")
+                    lines.append(str(i) + ". " + r.get("title", ""))
+                    lines.append("   " + r.get("href", ""))
+                    lines.append("   " + r.get("body", "")[:200])
+                sys.stderr.write("[proxy] web_search: ddgs returned " + str(len(results)) + " results\n")
                 return "\n".join(lines)
         except Exception as e:
-            sys.stderr.write(f"[proxy] web_search: ddgs error: {e}\n")
+            sys.stderr.write("[proxy] web_search: ddgs error: " + str(e) + "\n")
 
     # Fallback: DuckDuckGo Instant Answer API
     import urllib.parse
@@ -242,19 +276,46 @@ def _ddg_search(query: str, max_results: int = 6) -> str:
         abstract = data.get("AbstractText", "")
         if abstract:
             sys.stderr.write("[proxy] web_search: DDG instant answer used\n")
-            return f"[Web search: {query}]\n{abstract}"
+            return "[Web search: " + query + "]\n" + abstract
     except Exception as e:
-        sys.stderr.write(f"[proxy] web_search: DDG fallback error: {e}\n")
-    return f"[Web search for {query!r} returned no results]"
+        sys.stderr.write("[proxy] web_search: DDG fallback error: " + str(e) + "\n")
+    return "[Web search for " + repr(query) + " returned no results]"
+
+
+def is_web_search_execution(body_obj: dict):
+    # Return search query if this is CC's 1-tool web-search execution call, else None.
+    # CC makes such a call when its WebSearch executor tries to use web_search_20250305;
+    # that request has exactly ONE tool after sanitization (web_search or WebSearch).
+    tools = body_obj.get("tools", [])
+    if len(tools) != 1:
+        return None
+    t = tools[0] if isinstance(tools[0], dict) else {}
+    if t.get("name") not in ("web_search", "WebSearch"):
+        return None
+    # Extract the search query from the last substantive message
+    for msg in reversed(body_obj.get("messages", [])):
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip():
+            return content.strip()[:300]
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    return block["text"].strip()[:300]
+                inp = block.get("input") or {}
+                if block.get("type") == "tool_use" and "query" in inp:
+                    return inp["query"]
+    return None
 
 
 def inject_web_search_results(body_obj: dict) -> dict:
-    # Replace empty/error tool_results for web_search calls with real DDG results.
+    # Replace empty/error tool_results for web_search/WebSearch with real DDG results.
     messages = body_obj.get("messages")
     if not messages:
         return body_obj
 
-    # Map tool_use_id -> (name, input) from all assistant turns.
+    # Map tool_use_id -> (name, input) from all assistant turns
     tool_use_map: dict = {}
     for msg in messages:
         if msg.get("role") != "assistant":
@@ -263,8 +324,9 @@ def inject_web_search_results(body_obj: dict) -> dict:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 tool_use_map[block["id"]] = (block["name"], block.get("input") or {})
 
-    if not any(name == "web_search" for name, _ in tool_use_map.values()):
-        return body_obj  # fast-path: no web_search in this conversation
+    # fast-path: no web_search / WebSearch tool_use in this conversation
+    if not any(name in ("web_search", "WebSearch") for name, _ in tool_use_map.values()):
+        return body_obj
 
     modified = False
     new_messages = list(messages)
@@ -280,7 +342,7 @@ def inject_web_search_results(body_obj: dict) -> dict:
                 continue
             uid = block.get("tool_use_id", "")
             name, inp = tool_use_map.get(uid, (None, {}))
-            if name != "web_search":
+            if name not in ("web_search", "WebSearch"):
                 continue
             rc = block.get("content", "")
             rc_text = (
@@ -293,11 +355,10 @@ def inject_web_search_results(body_obj: dict) -> dict:
             if not query:
                 continue
             sys.stderr.write(
-                f"[proxy] web_search: CC returned empty result for {query!r} — fetching DDG\n"
+                "[proxy] web_search: CC returned empty result for " + repr(query) + " — fetching DDG\n"
             )
-            results = _ddg_search(query)
             new_block = dict(block)
-            new_block["content"] = results
+            new_block["content"] = _ddg_search(query)
             new_content[j] = new_block
             modified = True
         if modified:
@@ -606,6 +667,30 @@ class Handler(BaseHTTPRequestHandler):
                 # model wants to output final text after completing work but is
                 # forced to keep calling tools (repeating `cat file.pbs` 20+ times).
                 # CERIT_CONTINUATION (imperative + BAD/GOOD example) is sufficient.
+
+        # FIX-7a: short-circuit CC's internal 1-tool web-search execution call.
+        # CERIT models cannot service web_search_20250305; return DDG directly.
+        if isinstance(body_obj, dict):
+            _ws_query = is_web_search_execution(body_obj)
+            if _ws_query:
+                sys.stderr.write("[proxy] web_search short-circuit: " + repr(_ws_query) + "\n")
+                _ws_text = _ddg_search(_ws_query)
+                _ws_resp = {
+                    'id': 'msg_wssc_001',
+                    'type': 'message',
+                    'role': 'assistant',
+                    'model': body_obj.get('model', 'cerit'),
+                    'content': [{'type': 'text', 'text': _ws_text}],
+                    'stop_reason': 'end_turn',
+                    'usage': {'input_tokens': 10, 'output_tokens': len(_ws_text) // 4},
+                }
+                _wb = json.dumps(_ws_resp).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(_wb)))
+                self.end_headers()
+                self.wfile.write(_wb)
+                return
 
         # Resolve routing
         attempts: list[str] = []

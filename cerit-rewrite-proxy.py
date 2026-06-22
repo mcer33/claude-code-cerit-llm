@@ -122,6 +122,13 @@ with open(TOKEN_FILE, "r", encoding="utf-8") as f:
 if not CERIT_TOKEN:
     sys.exit(f"[proxy] ERROR: token file {TOKEN_FILE} is empty — add your CERIT API key")
 
+
+# ddgs: optional web-search backend for proxy-side web_search injection
+try:
+    from ddgs import DDGS as _DDGS
+    _DDG_AVAILABLE = True
+except ImportError:
+    _DDG_AVAILABLE = False
 from cerit_prompts import (
     CERIT_CONTINUATION,
     REPEAT_GUARD_TMPL,
@@ -197,6 +204,111 @@ def classify_task(body: dict) -> str:
         return "fast"
     return "default"
 
+
+
+# ── Proxy-side web-search injection ─────────────────────────────────────────
+# CC only services web_search tool_use when the tool definition carries the
+# proprietary type web_search_20250305. After the proxy converts that to a
+# plain function tool, CC cannot service the call and returns an empty or
+# error tool_result. inject_web_search_results() detects this on the NEXT
+# request, fetches real DuckDuckGo results, and fills in the content before
+# forwarding to CERIT so the model sees real search results.
+
+_WEB_SEARCH_EMPTY_THRESHOLD = 50  # chars; result shorter than this → treat as empty
+
+
+def _ddg_search(query: str, max_results: int = 6) -> str:
+    if _DDG_AVAILABLE:
+        try:
+            results = list(_DDGS().text(query, max_results=max_results))
+            if results:
+                lines = [f"[Web search results for: {query}]"]
+                for i, r in enumerate(results, 1):
+                    lines.append(f"{i}. {r.get('title', '')}")
+                    lines.append(f"   {r.get('href', '')}")
+                    lines.append(f"   {r.get('body', '')[:200]}")
+                sys.stderr.write(f"[proxy] web_search: ddgs returned {len(results)} results\n")
+                return "\n".join(lines)
+        except Exception as e:
+            sys.stderr.write(f"[proxy] web_search: ddgs error: {e}\n")
+
+    # Fallback: DuckDuckGo Instant Answer API
+    import urllib.parse
+    try:
+        url = ("https://api.duckduckgo.com/?q=" + urllib.parse.quote(query)
+               + "&format=json&no_html=1&skip_disambig=1")
+        req = urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = json.loads(urlreq.urlopen(req, timeout=8).read().decode("utf-8", errors="ignore"))
+        abstract = data.get("AbstractText", "")
+        if abstract:
+            sys.stderr.write("[proxy] web_search: DDG instant answer used\n")
+            return f"[Web search: {query}]\n{abstract}"
+    except Exception as e:
+        sys.stderr.write(f"[proxy] web_search: DDG fallback error: {e}\n")
+    return f"[Web search for {query!r} returned no results]"
+
+
+def inject_web_search_results(body_obj: dict) -> dict:
+    # Replace empty/error tool_results for web_search calls with real DDG results.
+    messages = body_obj.get("messages")
+    if not messages:
+        return body_obj
+
+    # Map tool_use_id -> (name, input) from all assistant turns.
+    tool_use_map: dict = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for block in (msg.get("content") or []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                tool_use_map[block["id"]] = (block["name"], block.get("input") or {})
+
+    if not any(name == "web_search" for name, _ in tool_use_map.values()):
+        return body_obj  # fast-path: no web_search in this conversation
+
+    modified = False
+    new_messages = list(messages)
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_content = list(content)
+        for j, block in enumerate(content):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            uid = block.get("tool_use_id", "")
+            name, inp = tool_use_map.get(uid, (None, {}))
+            if name != "web_search":
+                continue
+            rc = block.get("content", "")
+            rc_text = (
+                " ".join(c.get("text", "") for c in rc if isinstance(c, dict))
+                if isinstance(rc, list) else str(rc or "")
+            )
+            if len(rc_text.strip()) >= _WEB_SEARCH_EMPTY_THRESHOLD:
+                continue  # CC already provided good results — leave untouched
+            query = inp.get("query", "")
+            if not query:
+                continue
+            sys.stderr.write(
+                f"[proxy] web_search: CC returned empty result for {query!r} — fetching DDG\n"
+            )
+            results = _ddg_search(query)
+            new_block = dict(block)
+            new_block["content"] = results
+            new_content[j] = new_block
+            modified = True
+        if modified:
+            new_msg = dict(msg)
+            new_msg["content"] = new_content
+            new_messages[i] = new_msg
+
+    if modified:
+        body_obj = dict(body_obj)
+        body_obj["messages"] = new_messages
+    return body_obj
 
 # ── Tool-definition sanitizer ────────────────────────────────────────────────
 # Three classes of problems in tool definitions Claude Code sends:
@@ -435,6 +547,7 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(body_obj, dict):
             body_obj = sanitize_tool_inputs(body_obj)
             body_obj = sanitize_tool_definitions(body_obj)
+            body_obj = inject_web_search_results(body_obj)
 
         request_has_tools = isinstance(body_obj, dict) and bool(body_obj.get("tools"))
 

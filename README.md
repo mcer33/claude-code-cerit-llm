@@ -2,7 +2,7 @@
 
 Route [Claude Code](https://github.com/anthropics/claude-code) to the free Czech academic LLM gateway at [llm.ai.e-infra.cz](https://llm.ai.e-infra.cz/) (operated by CERIT-SC / e-INFRA CZ).
 
-Includes a local rewrite proxy, shell functions, and a 117-test benchmark suite. Benchmark winner: **GLM-5.2 with thinking disabled — 494 s / 7/7 tasks / 0% idle-stop / 0 upstream errors / 0 context inflation**.
+Includes a local rewrite proxy, shell functions, and a 160-test benchmark suite. N-suite winner: **GLM-5.2 — avg quality 8.79/10 across 43 tasks, 908 s total, 0 idle stops** (beats native Sonnet 4.6, qwen3.5-122b, and DeepSeek V4 Pro).
 
 ## What's included
 
@@ -79,6 +79,28 @@ claude-cerit-rich
 | G Stress | 5 | 4/5 80% | 3.5 |
 | E Search/audit | 10 | 8/10 80% | 2.0 |
 | K Autonomous | 5 | 4/5 80% | 2.0 |
+
+### N-suite head-to-head (43 tasks, June 2026 — 4 models)
+
+43-task benchmark run against the public `cerit-comparison-bench` repo (identical working directory for all models). Quality judged by qwen3.5-122b (1–10 scale). Native Sonnet 4.6 included as reference baseline.
+
+| Category (n tasks) | GLM-5.2 | DeepSeek V4 | qwen3.5-122b | Sonnet 4.6 *(native)* |
+|---|---|---|---|---|
+| **[N] Self-referential (10)** | 6.8 | 5.6 | 7.2 | 5.3 |
+| **[A] Read/analyze (6)** | **10.0** | 9.0 | 6.8 | 7.7 |
+| **[B] Code generation (4)** | 8.0 | **10.0** | 8.3 | 9.5 |
+| **[C] Edit/patch (3)** | **10.0** | **10.0** | **10.0** | — |
+| **[D] Bash/shell (4)** | **10.0** | **10.0** | 8.2 | 9.8 |
+| **[E] Search/audit (4)** | 9.3 | 9.2 | 8.7 | **10.0** |
+| **[F] Multi-tool (6)** | **10.0** | 9.2 | 6.5 | 8.3 |
+| **[G] Stress (2)** | **10.0** | 9.5 | **10.0** | **10.0** |
+| **[H] Explain (2)** | 2.0 | **10.0** | **10.0** | **10.0** |
+| **[I] Verify (2)** | **10.0** | **10.0** | **10.0** | 9.5 |
+| **Overall avg quality** | **8.79** | 8.57 | 7.97 | 8.21 |
+| **Total wall time** | **908 s** | 1751 s | 1291 s | 772 s |
+| **Proxy injections** | 165 | 302 | 173 | — |
+
+GLM-5.2 wins on quality (8.79) and is the fastest CERIT model — only 17% slower than native Sonnet 4.6. DeepSeek V4 scores second (8.57) but needs 2× the wall time and nearly 2× the continuation nudges. GLM's one weak spot is [H] explanation tasks (2.0), where it briefly narrated instead of using tools; DeepSeek and qwen3.5 handle those flawlessly.
 
 Full blog post: [michalcifra.com/blogs/BL2605-claude-via-cerit-llms/](https://michalcifra.com/blogs/BL2605-claude-via-cerit-llms/)
 

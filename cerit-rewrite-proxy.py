@@ -675,10 +675,38 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     body_obj["system"] = (existing_sys or "") + injection
                 sys.stderr.write("[proxy] injected continuation rule\n")
-                # tool_choice:any deliberately NOT injected — causes cat-loop:
-                # model wants to output final text after completing work but is
-                # forced to keep calling tools (repeating `cat file.pbs` 20+ times).
-                # CERIT_CONTINUATION (imperative + BAD/GOOD example) is sufficient.
+                sys.stderr.flush()
+                # Force delegate_explorer on turn 0 when it is available in the tool
+                # list AND the request looks like a local file/code task.
+                # Skip forcing for web-search tasks so WebSearch tool is used directly.
+                # Fall back to tool_choice:any if delegate_explorer is not in the list.
+                if n_asst == 0 and not body_obj.get("tool_choice"):
+                    tool_names = [t.get("name", "") for t in (body_obj.get("tools") or [])]
+                    delegate = "mcp__cerit-delegate__delegate_explorer"
+                    # Detect web-search intent from last user message.
+                    _last_user_text = ""
+                    for _m in reversed(body_obj.get("messages", [])):
+                        if _m.get("role") == "user":
+                            _c = _m.get("content", "")
+                            _last_user_text = (_c if isinstance(_c, str)
+                                else " ".join(b.get("text","") for b in _c if isinstance(b,dict) and b.get("type")=="text"))
+                            break
+                    _lu = _last_user_text.lower()
+                    _web_task = any(kw in _lu for kw in (
+                        "websearch", "web search", "search the web", "search online",
+                        "internet", "latest release", "latest version", "current version",
+                        "latest ", "look up online", "find online", "news about",
+                    ))
+                    if _web_task and "WebSearch" in tool_names:
+                        body_obj["tool_choice"] = {"type": "tool", "name": "WebSearch"}
+                        sys.stderr.write("[proxy] injected tool_choice:WebSearch (turn 0, web-task)\n")
+                    elif delegate in tool_names and not _web_task:
+                        body_obj["tool_choice"] = {"type": "tool", "name": delegate}
+                        sys.stderr.write(f"[proxy] injected tool_choice:delegate_explorer (turn 0)\n")
+                    else:
+                        body_obj["tool_choice"] = {"type": "any"}
+                        sys.stderr.write("[proxy] injected tool_choice:any (turn 0, no delegate)\n")
+                    sys.stderr.flush()
 
         # FIX-7a: short-circuit CC's internal 1-tool web-search execution call.
         # CERIT models cannot service web_search_20250305; return DDG directly.
